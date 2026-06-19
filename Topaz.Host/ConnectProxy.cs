@@ -11,9 +11,12 @@ namespace Topaz.Host;
 /// to succeed on non-Docker local installations without requiring elevated privileges.
 ///
 /// Routing rules (evaluated in order):
-///   1. {TopazHostname}:443 or *.{TopazHostname}:443  →  127.0.0.1:{DefaultResourceManagerPort}
-///   2. *.{TopazHostname}:{port}                       →  127.0.0.1:{port}  (direct, non-443)
-///   3. Everything else                                →  DNS-resolved host:{port}  (transparent pass-through)
+///   1. *.{TopazHostname} where host is a storage data-plane host
+///      (*.blob.* / *.table.* / *.queue.* / *.file.*)  →  127.0.0.1:{DefaultStoragePort}
+///      (any requested port — legacy Storage SDKs drop a custom port and CONNECT on :443)
+///   2. {TopazHostname}:443 or *.{TopazHostname}:443   →  127.0.0.1:{DefaultResourceManagerPort}
+///   3. *.{TopazHostname}:{port}                        →  127.0.0.1:{port}  (direct, non-443)
+///   4. Everything else                                 →  DNS-resolved host:{port}  (transparent pass-through)
 ///
 /// Set HTTPS_PROXY=http://127.0.0.1:{ConnectProxyPort} in the client environment to use.
 /// </summary>
@@ -114,6 +117,18 @@ internal sealed class ConnectProxy(string bindAddress, ITopazLogger logger)
         var isTopaz = requestedHost.Equals(GlobalSettings.TopazHostname, StringComparison.OrdinalIgnoreCase)
                       || requestedHost.EndsWith(topazSuffix, StringComparison.OrdinalIgnoreCase);
 
+        if (isTopaz && IsStorageDataPlaneHost(requestedHost))
+        {
+            // Storage account-in-host URLs ({account}.blob|table|queue|file.…).
+            // Legacy Azure Storage SDKs (notably Microsoft.Azure.Cosmos.Table /
+            // Microsoft.Azure.Storage) drop a custom endpoint port and CONNECT on
+            // :443, which rule 1 below would send to the resource-manager port —
+            // where there is no data-plane endpoint (404 "no corresponding
+            // endpoint"). Route storage hosts to the storage data plane regardless
+            // of the requested port so both port-carrying and :443 clients work.
+            return ("127.0.0.1", GlobalSettings.DefaultStoragePort);
+        }
+
         if (isTopaz && requestedPort == GlobalSettings.HttpsPort)
         {
             // MSAL user-realm discovery hits :443 — remap to the resource-manager port
@@ -125,6 +140,16 @@ internal sealed class ConnectProxy(string bindAddress, ITopazLogger logger)
             ("127.0.0.1", requestedPort) :
             // Non-Topaz host: pass through transparently
             (requestedHost, requestedPort);
+    }
+
+    // Account-in-host storage URLs carry a service label: {account}.blob. /
+    // .table. / .queue. / .file. — the Azure data-plane indicators.
+    private static bool IsStorageDataPlaneHost(string host)
+    {
+        return host.Contains(".blob.", StringComparison.OrdinalIgnoreCase)
+            || host.Contains(".table.", StringComparison.OrdinalIgnoreCase)
+            || host.Contains(".queue.", StringComparison.OrdinalIgnoreCase)
+            || host.Contains(".file.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryParseConnectTarget(string requestLine, out string host, out int port)

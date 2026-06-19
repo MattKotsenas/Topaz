@@ -14,7 +14,10 @@ internal sealed class CreateTableEndpoint(Pipeline eventPipeline, ITopazLogger l
 {
     public string? ProviderNamespace => "Microsoft.Storage";
 
-    public string[] Endpoints => ["POST /Tables"];
+    // The legacy Microsoft.Azure.Storage / Cosmos.Table SDK posts table creates to
+    // "/Tables()" (trailing empty OData parens); modern clients use "/Tables".
+    // Router treats a leading '^' segment as a regex, so accept both forms.
+    public string[] Endpoints => ["POST /^Tables(\\(\\))?$"];
 
     public string[] Permissions => ["Microsoft.Storage/storageAccounts/tableServices/tables/write"];
 
