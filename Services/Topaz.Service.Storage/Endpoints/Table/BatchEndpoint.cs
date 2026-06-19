@@ -96,7 +96,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
 
         foreach (var op in operations)
         {
-            var (status, errorBody, echoBody) = ExecuteOperation(
+            var (status, errorBody, echoBody, etagHeader) = ExecuteOperation(
                 op, subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, context.Request.Headers);
             Logger.LogDebug(nameof(BatchEndpoint), nameof(GetResponse), "$batch op {0} {1}({2},{3}) pref='{4}' -> {5}",
                 op.Method, op.TableName, op.PartitionKey ?? string.Empty, op.RowKey ?? string.Empty, op.Prefer ?? string.Empty, ((int)status).ToString());
@@ -114,6 +114,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             {
                 // Operation with an entity body to echo (e.g. a retrieve returning the row).
                 sb.Append("Content-ID: ").Append(op.ContentId ?? "0").Append("\r\n");
+                if (etagHeader != null) sb.Append("ETag: ").Append(etagHeader).Append("\r\n");
                 sb.Append("Content-Type: application/json;odata=minimalmetadata;streaming=true;charset=utf-8\r\n");
                 sb.Append("DataServiceVersion: 3.0;\r\n\r\n");
                 sb.Append(echoBody).Append("\r\n");
@@ -121,6 +122,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             else
             {
                 sb.Append("Content-ID: ").Append(op.ContentId ?? "0").Append("\r\n");
+                if (etagHeader != null) sb.Append("ETag: ").Append(etagHeader).Append("\r\n");
                 sb.Append("DataServiceVersion: 3.0;\r\n\r\n");
             }
         }
@@ -135,7 +137,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             "Content-Type", "multipart/mixed; boundary=" + batchBoundary);
     }
 
-    private (HttpStatusCode status, string? errorBody, string? echoBody) ExecuteOperation(
+    private (HttpStatusCode status, string? errorBody, string? echoBody, string? etagHeader) ExecuteOperation(
         BatchOperation op, SubscriptionIdentifier subscription, ResourceGroupIdentifier resourceGroup,
         string account, IHeaderDictionary headers)
     {
@@ -148,20 +150,20 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                     // Retrieve within a change set: echo the entity (200). A missing entity
                     // throws below and yields 404, which the client tolerates for a retrieve.
                     return (HttpStatusCode.OK, null,
-                        DataPlane.GetEntity(subscription, resourceGroup, op.TableName, account, op.PartitionKey!, op.RowKey!));
+                        DataPlane.GetEntity(subscription, resourceGroup, op.TableName, account, op.PartitionKey!, op.RowKey!), null);
 
                 case "POST":
                     // Insert into the table named by the path (no entity key). The client
                     // signals echo via Prefer: an echoContent=false insert sends
                     // "return-no-content" and expects 204; otherwise it expects 201 with the
-                    // created entity echoed back.
+                    // created entity echoed back. Either way the client derives the entity
+                    // Timestamp from the response ETag, so an insert must carry one.
                     DataPlane.InsertEntity(bodyStream, subscription, resourceGroup, op.TableName, account);
-                    if (PrefersNoContent(op.Prefer))
-                    {
-                        return (HttpStatusCode.NoContent, null, null);
-                    }
-
-                    return (HttpStatusCode.Created, null, ReadBackEntity(op, subscription, resourceGroup, account));
+                    var inserted = ReadBackEntity(op, subscription, resourceGroup, account);
+                    var insertEtag = EtagHeaderFromEntity(inserted);
+                    return PrefersNoContent(op.Prefer)
+                        ? (HttpStatusCode.NoContent, null, null, insertEtag)
+                        : (HttpStatusCode.Created, null, inserted, insertEtag);
 
                 case "PUT":
                 case "MERGE":
@@ -180,34 +182,50 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                             op.PartitionKey!, op.RowKey!);
                     }
 
-                    return (HttpStatusCode.NoContent, null, null);
+                    return (HttpStatusCode.NoContent, null, null, null);
 
                 case "DELETE":
                     DataPlane.DeleteEntity(subscription, resourceGroup, op.TableName, account,
                         op.PartitionKey!, op.RowKey!, headers);
-                    return (HttpStatusCode.NoContent, null, null);
+                    return (HttpStatusCode.NoContent, null, null, null);
 
                 default:
-                    return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}", null);
+                    return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}", null, null);
             }
         }
         catch (EntityAlreadyExistsException)
         {
-            return (HttpStatusCode.Conflict, "{\"odata.error\":{\"code\":\"EntityAlreadyExists\"}}", null);
+            return (HttpStatusCode.Conflict, "{\"odata.error\":{\"code\":\"EntityAlreadyExists\"}}", null, null);
         }
         catch (EntityNotFoundException)
         {
-            return (HttpStatusCode.NotFound, "{\"odata.error\":{\"code\":\"ResourceNotFound\"}}", null);
+            return (HttpStatusCode.NotFound, "{\"odata.error\":{\"code\":\"ResourceNotFound\"}}", null, null);
         }
         catch (Exception ex)
         {
             Logger.LogError(ex);
-            return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}", null);
+            return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}", null, null);
         }
     }
 
     private static bool PrefersNoContent(string? prefer) =>
         prefer != null && prefer.Contains("return-no-content", StringComparison.OrdinalIgnoreCase);
+
+    // Builds the sub-response ETag header the legacy SDK parses for an insert
+    // (W/"datetime'<url-encoded-timestamp>'"); the SDK derives the entity Timestamp from it.
+    private static string? EtagHeaderFromEntity(string? entityJson)
+    {
+        if (string.IsNullOrEmpty(entityJson)) return null;
+        try
+        {
+            var ts = (string?)JsonNode.Parse(entityJson)?["Timestamp"];
+            return ts == null ? null : "W/\"datetime'" + Uri.EscapeDataString(ts) + "'\"";
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     // Echoes the stored entity (with the server-assigned Timestamp and odata.etag) for an
     // echo-content insert. A POST to the table carries no key in the path, so the keys come
