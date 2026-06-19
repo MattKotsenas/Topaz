@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
@@ -95,6 +94,8 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         {
             var (status, errorBody, echoBody) = ExecuteOperation(
                 op, subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, context.Request.Headers);
+            Logger.LogDebug(nameof(BatchEndpoint), nameof(GetResponse), "$batch op {0} {1}({2},{3}) -> {4}",
+                op.Method, op.TableName, op.PartitionKey ?? string.Empty, op.RowKey ?? string.Empty, ((int)status).ToString());
 
             sb.Append("--").Append(changesetBoundary).Append("\r\n");
             sb.Append("Content-Type: application/http\r\n");
@@ -107,7 +108,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             }
             else if (echoBody != null)
             {
-                // Echo-content insert: 201 Created with the created entity in the body.
+                // Operation with an entity body to echo (e.g. a retrieve returning the row).
                 sb.Append("Content-ID: ").Append(op.ContentId ?? "0").Append("\r\n");
                 sb.Append("Content-Type: application/json;odata=minimalmetadata;streaming=true;charset=utf-8\r\n");
                 sb.Append("DataServiceVersion: 3.0;\r\n\r\n");
@@ -139,12 +140,18 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes(op.Body ?? string.Empty));
             switch (op.Method.ToUpperInvariant())
             {
+                case "GET":
+                    // Retrieve within a change set: echo the entity (200). A missing entity
+                    // throws below and yields 404, which the client tolerates for a retrieve.
+                    return (HttpStatusCode.OK, null,
+                        DataPlane.GetEntity(subscription, resourceGroup, op.TableName, account, op.PartitionKey!, op.RowKey!));
+
                 case "POST":
                     // Insert into the table named by the path (no entity key).
+                    // TableOperation.Insert defaults to echoContent=false, so the client
+                    // expects 204 No Content (not 201).
                     DataPlane.InsertEntity(bodyStream, subscription, resourceGroup, op.TableName, account);
-                    // TableOperation.Insert defaults to echoContent=true, so the client
-                    // expects 201 Created with the created entity echoed back (not 204).
-                    return (HttpStatusCode.Created, null, ReadBackEntity(op, subscription, resourceGroup, account));
+                    return (HttpStatusCode.NoContent, null, null);
 
                 case "PUT":
                 case "MERGE":
@@ -186,27 +193,6 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         {
             Logger.LogError(ex);
             return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}", null);
-        }
-    }
-
-    // Echoes the stored entity (with the server-assigned Timestamp and odata.etag) the
-    // way an echo-content insert does. A POST to the table carries no key in the path,
-    // so the keys are read from the entity body; on any miss, fall back to the request body.
-    private string? ReadBackEntity(BatchOperation op, SubscriptionIdentifier subscription,
-        ResourceGroupIdentifier resourceGroup, string account)
-    {
-        if (string.IsNullOrEmpty(op.Body)) return null;
-        try
-        {
-            var node = JsonNode.Parse(op.Body);
-            var pk = (string?)node?["PartitionKey"];
-            var rk = (string?)node?["RowKey"];
-            if (string.IsNullOrEmpty(pk) || string.IsNullOrEmpty(rk)) return op.Body;
-            return DataPlane.GetEntity(subscription, resourceGroup, op.TableName, account, pk, rk);
-        }
-        catch
-        {
-            return op.Body;
         }
     }
 
