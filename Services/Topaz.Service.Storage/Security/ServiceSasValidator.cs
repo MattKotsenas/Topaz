@@ -214,18 +214,42 @@ internal sealed class ServiceSasValidator(AzureStorageControlPlane controlPlane,
         };
     }
 
-    // Blob StringToSign (Azure REST API 2020-12-06+):
-    // permissions\nstart\nexpiry\ncanonicalized_resource\nsi\nsip\nspr\nsv\nsr\n\n\nrscc\nrscd\nrsce\nrscl\nrsct
+    // Blob Service SAS string-to-sign. The set of signed fields is version-dependent
+    // (see the "Create a service SAS" REST reference). Three formats are in use:
+    //   2015-04-05 .. 2018-10-31 : ...\nspr\nsv\nrscc\nrscd\nrsce\nrscl\nrsct
+    //                              (no signedResource / signedSnapshotTime / signedEncryptionScope)
+    //   2018-11-09 .. 2020-11-?? : ...\nspr\nsv\nsr\nsnapshot\nrscc\n...
+    //                              (adds signedResource + signedSnapshotTime)
+    //   2020-12-06 and later     : ...\nspr\nsv\nsr\nsnapshot\nencryptionScope\nrscc\n...
+    //                              (adds signedEncryptionScope)
+    // Older clients (e.g. legacy SDKs that emit sv=2016-10-16) sign without the
+    // signedResource block; including it unconditionally breaks their signatures.
     private static string BuildBlobStringToSign(
         string sp, string st, string se, string canonicalizedResource,
         string si, string sip, string spr, string sv, string sr,
-        string rscc, string rscd, string rsce, string rscl, string rsct) =>
-        string.Join("\n",
-            sp, st, se, canonicalizedResource, si, sip, spr, sv,
-            sr,           // signedResource (b / c / bs / bv)
-            string.Empty, // signedSnapshotTime
-            string.Empty, // signedEncryptionScope
-            rscc, rscd, rsce, rscl, rsct);
+        string rscc, string rscd, string rsce, string rscl, string rsct)
+    {
+        // SAS versions are ISO yyyy-MM-dd strings, so ordinal comparison orders them chronologically.
+        var includeSignedResource = string.CompareOrdinal(sv, "2018-11-09") >= 0;
+        var includeEncryptionScope = string.CompareOrdinal(sv, "2020-12-06") >= 0;
+
+        var fields = new List<string> { sp, st, se, canonicalizedResource, si, sip, spr, sv };
+        if (includeSignedResource)
+        {
+            fields.Add(sr);            // signedResource (b / c / bs / bv)
+            fields.Add(string.Empty);  // signedSnapshotTime
+            if (includeEncryptionScope)
+                fields.Add(string.Empty); // signedEncryptionScope
+        }
+
+        fields.Add(rscc);
+        fields.Add(rscd);
+        fields.Add(rsce);
+        fields.Add(rscl);
+        fields.Add(rsct);
+
+        return string.Join("\n", fields);
+    }
 
     // Queue StringToSign:
     // permissions\nstart\nexpiry\ncanonicalized_resource\nsi\nsip\nspr\nsv
