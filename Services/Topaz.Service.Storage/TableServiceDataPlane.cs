@@ -282,12 +282,18 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
         File.Delete(entityPath);
 
-        var root = JsonNode.Parse(rawContent);
+        var root = JsonNode.Parse(rawContent)!.AsObject();
         var newEtag = new ETag(DateTimeOffset.Now.Ticks.ToString());
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
 
-        root!["Timestamp"] = timestamp;
-        root!["odata.etag"] = newEtag.ToString("H");
+        // The entity keys are authoritative from the request URL; an update/merge body
+        // may omit them (they are not required in the payload). Persist them so the
+        // stored entity always carries PartitionKey/RowKey - otherwise a later query
+        // returns a keyless entity and SDK entity resolvers dereference a null RowKey.
+        root["PartitionKey"] = partitionKey;
+        root["RowKey"] = rowKey;
+        root["Timestamp"] = timestamp;
+        root["odata.etag"] = newEtag.ToString("H");
 
         var data = root.ToJsonString();
 
