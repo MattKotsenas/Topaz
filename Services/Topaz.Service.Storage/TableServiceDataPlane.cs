@@ -250,7 +250,11 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         PathGuard.ValidateName(partitionKey);
         PathGuard.ValidateName(rowKey);
 
-        var etag = headers["If-Match"];
+        // Absent If-Match means an unconditional update (e.g. InsertOrMerge /
+        // InsertOrReplace, which send no precondition). Default to "*" so the
+        // etag check below is skipped, mirroring DeleteEntity. Without this an
+        // unconditional upsert against an *existing* entity wrongly 412s.
+        var etag = headers["If-Match"].FirstOrDefault() ?? "*";
         var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
 
         using var sr = new StreamReader(input, leaveOpen: true);
