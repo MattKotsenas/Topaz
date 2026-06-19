@@ -236,7 +236,7 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         root["PartitionKey"] = partitionKey;
         root["RowKey"] = rowKey;
         root["Timestamp"] = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
-        root["odata.etag"] = DateTimeOffset.Now.Ticks;
+        root["odata.etag"] = new ETag(DateTimeOffset.Now.Ticks.ToString()).ToString("H");
 
         File.WriteAllText(entityPath, root.ToJsonString());
     }
@@ -279,11 +279,11 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         File.Delete(entityPath);
 
         var root = JsonNode.Parse(rawContent);
-        var newEtag = DateTimeOffset.Now.Ticks;
+        var newEtag = new ETag(DateTimeOffset.Now.Ticks.ToString());
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
 
         root!["Timestamp"] = timestamp;
-        root!["odata.etag"] = newEtag;
+        root!["odata.etag"] = newEtag.ToString("H");
 
         var data = root.ToJsonString();
 
