@@ -65,9 +65,8 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         var subscriptionIdentifier = storageAccount!.GetSubscription();
         var resourceGroupIdentifier = storageAccount!.GetResourceGroup();
 
-        if (!IsRequestAuthorized(subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, context))
+        if (!IsRequestAuthorized(subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, context, response))
         {
-            response.StatusCode = HttpStatusCode.Unauthorized;
             return;
         }
 
