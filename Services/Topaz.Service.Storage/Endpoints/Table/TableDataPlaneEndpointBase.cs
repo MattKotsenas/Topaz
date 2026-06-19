@@ -214,7 +214,7 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
 
         var match = matches.Value;
         var dataMatches = Regex.Match(match,
-            @"^(?<tableName>\w+)\(PartitionKey='(?<partitionKey>\w+)',(%20|\s)?RowKey='(?<rowKey>\w+)'\)$");
+            @"^(?<tableName>\w+)\(PartitionKey='(?<partitionKey>[^']*)',(%20|\s)?RowKey='(?<rowKey>[^']*)'\)$");
 
         var tableName = dataMatches.Groups["tableName"].Value;
         var partitionKey = dataMatches.Groups["partitionKey"].Value;

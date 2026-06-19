@@ -33,7 +33,7 @@ internal sealed class GetTableEntityEndpoint(Pipeline eventPipeline, ITopazLogge
         if (!IsRequestAuthorized(subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, context, response))
             return;
 
-        var matches = Regex.Match(context.Request.Path, @"\w+\(PartitionKey='\w+',(%20|\s)?RowKey='\w+'\)$",
+        var matches = Regex.Match(context.Request.Path, @"\w+\(PartitionKey='[^']*',(%20|\s)?RowKey='[^']*'\)$",
             RegexOptions.IgnoreCase);
 
         var (tableName, partitionKey, rowKey) = GetOperationDataForUpdateOperation(matches);
