@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
@@ -41,6 +42,9 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
 
     private static readonly Regex ContentIdRegex = new(
         @"Content-ID:\s*(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex PreferRegex = new(
+        @"Prefer:\s*(?<pref>[^\r\n]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public string? ProviderNamespace => "Microsoft.Storage";
 
@@ -94,8 +98,8 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         {
             var (status, errorBody, echoBody) = ExecuteOperation(
                 op, subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, context.Request.Headers);
-            Logger.LogDebug(nameof(BatchEndpoint), nameof(GetResponse), "$batch op {0} {1}({2},{3}) -> {4}",
-                op.Method, op.TableName, op.PartitionKey ?? string.Empty, op.RowKey ?? string.Empty, ((int)status).ToString());
+            Logger.LogDebug(nameof(BatchEndpoint), nameof(GetResponse), "$batch op {0} {1}({2},{3}) pref='{4}' -> {5}",
+                op.Method, op.TableName, op.PartitionKey ?? string.Empty, op.RowKey ?? string.Empty, op.Prefer ?? string.Empty, ((int)status).ToString());
 
             sb.Append("--").Append(changesetBoundary).Append("\r\n");
             sb.Append("Content-Type: application/http\r\n");
@@ -147,11 +151,17 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                         DataPlane.GetEntity(subscription, resourceGroup, op.TableName, account, op.PartitionKey!, op.RowKey!));
 
                 case "POST":
-                    // Insert into the table named by the path (no entity key).
-                    // TableOperation.Insert defaults to echoContent=false, so the client
-                    // expects 204 No Content (not 201).
+                    // Insert into the table named by the path (no entity key). The client
+                    // signals echo via Prefer: an echoContent=false insert sends
+                    // "return-no-content" and expects 204; otherwise it expects 201 with the
+                    // created entity echoed back.
                     DataPlane.InsertEntity(bodyStream, subscription, resourceGroup, op.TableName, account);
-                    return (HttpStatusCode.NoContent, null, null);
+                    if (PrefersNoContent(op.Prefer))
+                    {
+                        return (HttpStatusCode.NoContent, null, null);
+                    }
+
+                    return (HttpStatusCode.Created, null, ReadBackEntity(op, subscription, resourceGroup, account));
 
                 case "PUT":
                 case "MERGE":
@@ -196,6 +206,30 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         }
     }
 
+    private static bool PrefersNoContent(string? prefer) =>
+        prefer != null && prefer.Contains("return-no-content", StringComparison.OrdinalIgnoreCase);
+
+    // Echoes the stored entity (with the server-assigned Timestamp and odata.etag) for an
+    // echo-content insert. A POST to the table carries no key in the path, so the keys come
+    // from the entity body; on any miss, fall back to the request body.
+    private string? ReadBackEntity(BatchOperation op, SubscriptionIdentifier subscription,
+        ResourceGroupIdentifier resourceGroup, string account)
+    {
+        if (string.IsNullOrEmpty(op.Body)) return null;
+        try
+        {
+            var node = JsonNode.Parse(op.Body);
+            var pk = (string?)node?["PartitionKey"];
+            var rk = (string?)node?["RowKey"];
+            if (string.IsNullOrEmpty(pk) || string.IsNullOrEmpty(rk)) return op.Body;
+            return DataPlane.GetEntity(subscription, resourceGroup, op.TableName, account, pk, rk);
+        }
+        catch
+        {
+            return op.Body;
+        }
+    }
+
     // Parses the single OData change set into its operations. Tolerant of the exact
     // boundary strings (derived from the body) and CRLF/LF line endings.
     private static List<BatchOperation> ParseChangeSetOperations(string body)
@@ -231,6 +265,10 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             var contentIdMatch = ContentIdRegex.Match(
                 body.Substring(Math.Max(0, m.Index - 200), Math.Min(body.Length, m.Index + 1) - Math.Max(0, m.Index - 200)));
 
+            // The Prefer header (in the embedded request headers, before the body) controls
+            // whether an insert echoes its entity: "return-no-content" -> 204, else 201+body.
+            var preferMatch = PreferRegex.Match(blank >= 0 ? segment.Substring(0, blank) : segment);
+
             operations.Add(new BatchOperation
             {
                 Method = method,
@@ -239,6 +277,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                 RowKey = rk,
                 Body = entityBody,
                 ContentId = contentIdMatch.Success ? contentIdMatch.Groups["id"].Value : null,
+                Prefer = preferMatch.Success ? preferMatch.Groups["pref"].Value : null,
             });
         }
 
@@ -313,5 +352,6 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         public string? RowKey { get; init; }
         public string? Body { get; init; }
         public string? ContentId { get; init; }
+        public string? Prefer { get; init; }
     }
 }
