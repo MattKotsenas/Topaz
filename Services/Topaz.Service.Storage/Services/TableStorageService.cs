@@ -21,6 +21,8 @@ public sealed class TableStorageService(Pipeline eventPipeline, ITopazLogger log
         // Specific routes first so they take priority over wildcard routes
         new GetTableServicePropertiesEndpoint(eventPipeline, logger),
         new SetTableServicePropertiesEndpoint(eventPipeline, logger),
+        // $batch must be registered before the wildcard POST /{tableName}.
+        new BatchEndpoint(eventPipeline, logger),
         new ListTablesEndpoint(eventPipeline, logger),
         new CreateTableEndpoint(eventPipeline, logger),
         new GetTableEndpoint(eventPipeline, logger),
