@@ -272,6 +272,9 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             return (tableName, keyMatch.Groups["pk"].Value, keyMatch.Groups["rk"].Value);
         }
 
+        // A keyless insert (POST) targets "Table()" (empty parens) - strip them to
+        // recover the table name; otherwise the insert hits a non-existent "Table()".
+        if (path.EndsWith("()", StringComparison.Ordinal)) path = path.Substring(0, path.Length - 2);
         return (path, null, null);
     }
 
