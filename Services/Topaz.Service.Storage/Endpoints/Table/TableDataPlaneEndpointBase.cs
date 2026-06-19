@@ -217,8 +217,10 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
             @"^(?<tableName>\w+)\(PartitionKey='(?<partitionKey>[^']*)',(%20|\s)?RowKey='(?<rowKey>[^']*)'\)$");
 
         var tableName = dataMatches.Groups["tableName"].Value;
-        var partitionKey = dataMatches.Groups["partitionKey"].Value;
-        var rowKey = dataMatches.Groups["rowKey"].Value;
+        // Keys arrive URL-encoded in the path (e.g. '>' as %3E); decode them so they match
+        // the keys an insert stored from the (already-decoded) request body.
+        var partitionKey = Uri.UnescapeDataString(dataMatches.Groups["partitionKey"].Value);
+        var rowKey = Uri.UnescapeDataString(dataMatches.Groups["rowKey"].Value);
 
         if (string.IsNullOrEmpty(tableName) || string.IsNullOrEmpty(partitionKey) || string.IsNullOrEmpty(rowKey))
         {
