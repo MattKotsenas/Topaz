@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
@@ -92,7 +93,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
 
         foreach (var op in operations)
         {
-            var (status, errorBody) = ExecuteOperation(
+            var (status, errorBody, echoBody) = ExecuteOperation(
                 op, subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, context.Request.Headers);
 
             sb.Append("--").Append(changesetBoundary).Append("\r\n");
@@ -103,6 +104,14 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             {
                 sb.Append("Content-Type: application/json\r\n\r\n");
                 sb.Append(errorBody).Append("\r\n");
+            }
+            else if (echoBody != null)
+            {
+                // Echo-content insert: 201 Created with the created entity in the body.
+                sb.Append("Content-ID: ").Append(op.ContentId ?? "0").Append("\r\n");
+                sb.Append("Content-Type: application/json;odata=minimalmetadata;streaming=true;charset=utf-8\r\n");
+                sb.Append("DataServiceVersion: 3.0;\r\n\r\n");
+                sb.Append(echoBody).Append("\r\n");
             }
             else
             {
@@ -121,7 +130,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             "Content-Type", "multipart/mixed; boundary=" + batchBoundary);
     }
 
-    private (HttpStatusCode status, string? errorBody) ExecuteOperation(
+    private (HttpStatusCode status, string? errorBody, string? echoBody) ExecuteOperation(
         BatchOperation op, SubscriptionIdentifier subscription, ResourceGroupIdentifier resourceGroup,
         string account, IHeaderDictionary headers)
     {
@@ -133,7 +142,9 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                 case "POST":
                     // Insert into the table named by the path (no entity key).
                     DataPlane.InsertEntity(bodyStream, subscription, resourceGroup, op.TableName, account);
-                    return (HttpStatusCode.NoContent, null);
+                    // TableOperation.Insert defaults to echoContent=true, so the client
+                    // expects 201 Created with the created entity echoed back (not 204).
+                    return (HttpStatusCode.Created, null, ReadBackEntity(op, subscription, resourceGroup, account));
 
                 case "PUT":
                 case "MERGE":
@@ -152,29 +163,50 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                             op.PartitionKey!, op.RowKey!);
                     }
 
-                    return (HttpStatusCode.NoContent, null);
+                    return (HttpStatusCode.NoContent, null, null);
 
                 case "DELETE":
                     DataPlane.DeleteEntity(subscription, resourceGroup, op.TableName, account,
                         op.PartitionKey!, op.RowKey!, headers);
-                    return (HttpStatusCode.NoContent, null);
+                    return (HttpStatusCode.NoContent, null, null);
 
                 default:
-                    return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}");
+                    return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}", null);
             }
         }
         catch (EntityAlreadyExistsException)
         {
-            return (HttpStatusCode.Conflict, "{\"odata.error\":{\"code\":\"EntityAlreadyExists\"}}");
+            return (HttpStatusCode.Conflict, "{\"odata.error\":{\"code\":\"EntityAlreadyExists\"}}", null);
         }
         catch (EntityNotFoundException)
         {
-            return (HttpStatusCode.NotFound, "{\"odata.error\":{\"code\":\"ResourceNotFound\"}}");
+            return (HttpStatusCode.NotFound, "{\"odata.error\":{\"code\":\"ResourceNotFound\"}}", null);
         }
         catch (Exception ex)
         {
             Logger.LogError(ex);
-            return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}");
+            return (HttpStatusCode.BadRequest, "{\"odata.error\":{\"code\":\"InvalidInput\"}}", null);
+        }
+    }
+
+    // Echoes the stored entity (with the server-assigned Timestamp and odata.etag) the
+    // way an echo-content insert does. A POST to the table carries no key in the path,
+    // so the keys are read from the entity body; on any miss, fall back to the request body.
+    private string? ReadBackEntity(BatchOperation op, SubscriptionIdentifier subscription,
+        ResourceGroupIdentifier resourceGroup, string account)
+    {
+        if (string.IsNullOrEmpty(op.Body)) return null;
+        try
+        {
+            var node = JsonNode.Parse(op.Body);
+            var pk = (string?)node?["PartitionKey"];
+            var rk = (string?)node?["RowKey"];
+            if (string.IsNullOrEmpty(pk) || string.IsNullOrEmpty(rk)) return op.Body;
+            return DataPlane.GetEntity(subscription, resourceGroup, op.TableName, account, pk, rk);
+        }
+        catch
+        {
+            return op.Body;
         }
     }
 
