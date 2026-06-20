@@ -34,7 +34,12 @@ internal sealed class PutTableEntityEndpoint(Pipeline eventPipeline, ITopazLogge
         var matches = Regex.Match(context.Request.Path, @"\w+\(PartitionKey='[^']*',(%20|\s)?RowKey='[^']*'\)$",
             RegexOptions.IgnoreCase);
 
+        // A PUT without an If-Match header is InsertOrReplace: an unconditional upsert that
+        // creates the entity when it is absent. A PUT with an If-Match header is a conditional
+        // Replace, which must return 404 when the entity does not exist.
+        var isInsertOrReplace = !context.Request.Headers.ContainsKey("If-Match");
+
         HandleUpdateEntityRequest(context.Request.Body, context.Request.Headers, matches,
-            subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, response);
+            subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, response, upsert: isInsertOrReplace);
     }
 }
