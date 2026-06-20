@@ -171,6 +171,11 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
                 // Just returns and let an endpoint prepare a correct response. The reason why there's no
                 // generic handler for that kind of situation is because in some scenarios (like when
                 // Evert Hub SDK validates a checkpoint), a specific error code is checked.
+                //
+                // The content type must still be set: storage SDKs parse the 404 error body only when the
+                // response advertises "application/json", and otherwise leave the parsed error code empty
+                // (so a benign "resource not found" surfaces as a hard error instead of being swallowed).
+                SetResponseContentType(context, response);
                 if (!HttpMethods.IsHead(context.Request.Method))
                 {
                     await context.Response.Body.WriteAsync(responseBytes);
