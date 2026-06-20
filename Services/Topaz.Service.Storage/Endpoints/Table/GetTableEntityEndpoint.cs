@@ -49,10 +49,10 @@ internal sealed class GetTableEntityEndpoint(Pipeline eventPipeline, ITopazLogge
         }
         catch (EntityNotFoundException)
         {
-            var error = new TableErrorResponse("EntityNotFound", "Entity not found.");
+            var error = new TableErrorResponse("ResourceNotFound", "The specified resource does not exist.");
 
             response.StatusCode = HttpStatusCode.NotFound;
-            response.Headers.Add("x-ms-error-code", "EntityNotFound");
+            response.Headers.Add("x-ms-error-code", "ResourceNotFound");
             response.Content = JsonContent.Create(error);
         }
     }

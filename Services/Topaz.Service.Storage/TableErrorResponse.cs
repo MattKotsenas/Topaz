@@ -9,11 +9,15 @@ internal class TableErrorResponse(string code, string message)
 
     public class ErrorDetail(string code, string message)
     {
+        [JsonPropertyName("code")]
         public string Code { get; init; } = code;
+
+        [JsonPropertyName("message")]
         public ErrorMessage Message { get; init; } = new(message);
 
         internal class ErrorMessage(string message)
         {
+            [JsonPropertyName("value")]
             public string Value { get; init; } = message;
         }
     }
