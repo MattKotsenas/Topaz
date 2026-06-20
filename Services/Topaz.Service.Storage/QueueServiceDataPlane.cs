@@ -480,11 +480,11 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
             TimeToLive = messageTtl
         };
 
-        // Set visibility timeout if specified
-        if (visibilityTimeout > 0)
-        {
-            message.UpdateVisibility(visibilityTimeout);
-        }
+        // A freshly-enqueued message becomes visible at EnqueuedTime + visibilityTimeout
+        // (== EnqueuedTime for the default timeout of 0, i.e. immediately visible). Always
+        // populate NextVisibleTime so the enqueue response carries <TimeNextVisible>, which
+        // the Azure Storage SDK's message parser dereferences unconditionally.
+        message.NextVisibleTime = message.EnqueuedTime!.Value.AddSeconds(visibilityTimeout);
 
         // Calculate expiry time
         if (message.EnqueuedTime.HasValue && messageTtl > 0)
