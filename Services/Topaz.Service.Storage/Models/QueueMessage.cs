@@ -87,14 +87,11 @@ public class QueueMessage
         UpdatedTime = DateTimeOffset.UtcNow;
         PopReceipt = PopReceiptGenerator.Generate();
 
-        if (visibilityTimeout > 0)
-        {
-            NextVisibleTime = DateTimeOffset.UtcNow.AddSeconds(visibilityTimeout);
-        }
-        else
-        {
-            NextVisibleTime = null;
-        }
+        // Always set the next-visible time. A zero visibility timeout means the message is immediately
+        // visible (i.e. now), not "no next-visible time". Azure Queue Storage always returns the
+        // x-ms-time-next-visible header on an update-message response; leaving this null omits that header
+        // and breaks clients that parse it (they expect an RFC1123 date for every updated message).
+        NextVisibleTime = DateTimeOffset.UtcNow.AddSeconds(visibilityTimeout);
     }
 
     /// <summary>
