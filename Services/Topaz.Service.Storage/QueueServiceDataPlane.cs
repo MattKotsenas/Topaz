@@ -184,7 +184,13 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
                 ?? throw new InvalidOperationException("Failed to deserialize message");
             
             // Update existing message
-            message.UpdateContent(content);
+            // A visibility-only update sends no request body, so the content arrives empty; it must
+            // preserve the existing message content. Only overwrite the content when new content was
+            // actually provided (Azure's update-message only changes content when the request carries one).
+            if (!string.IsNullOrEmpty(content))
+            {
+                message.UpdateContent(content);
+            }
             message.UpdateVisibility(visibilityTimeout);
         }
         else
