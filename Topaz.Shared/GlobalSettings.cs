@@ -49,6 +49,15 @@ public static class GlobalSettings
     // service port range (1–1023) and unlikely to conflict with common development tools.
     // Follows the same port-constant convention as the other Topaz ports (8887–8899).
     public const ushort ConnectProxyPort = 44380;
+    // Optional plain-HTTP storage data-plane port. When TOPAZ_STORAGE_HTTP_PORT is set to a non-zero port,
+    // the host also serves the storage data plane over plain HTTP on that port (in addition to the HTTPS
+    // DefaultStoragePort). Intended for clients or proxies that terminate TLS upstream and forward the
+    // decrypted storage traffic, avoiding a second TLS handshake on the hot path.
+    public static readonly ushort? StorageHttpPort =
+        ushort.TryParse(Environment.GetEnvironmentVariable("TOPAZ_STORAGE_HTTP_PORT"), out var parsedStorageHttpPort)
+        && parsedStorageHttpPort != 0
+            ? parsedStorageHttpPort
+            : null;
     public const string TopazHostname = "topaz.local.dev";
     public const string MainEmulatorDirectory = ".topaz";
     public const string KeyVaultDnsSuffix = "vault.topaz.local.dev";

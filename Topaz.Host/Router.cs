@@ -26,6 +26,12 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         // Using the Host header port breaks routing when the client uses a different
         // external port (e.g. a random Docker host-port mapping in tests).
         var port = context.Connection.LocalPort;
+        // Requests arriving on the optional plain-HTTP storage port (TOPAZ_STORAGE_HTTP_PORT) are storage
+        // data-plane requests; match them against the storage endpoints registered on DefaultStoragePort.
+        if (GlobalSettings.StorageHttpPort is { } storageHttpPort && port == storageHttpPort)
+        {
+            port = GlobalSettings.DefaultStoragePort;
+        }
 
         if (method == null)
         {

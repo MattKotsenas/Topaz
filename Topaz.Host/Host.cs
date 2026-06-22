@@ -422,6 +422,17 @@ public class Host
                             throw new ArgumentOutOfRangeException();
                     }
                 }
+
+                // Optional plain-HTTP storage listener (TOPAZ_STORAGE_HTTP_PORT). Serves the storage data
+                // plane over plain HTTP for clients/proxies that terminate TLS upstream; the Router maps
+                // requests arriving here onto the storage endpoints (see Router.MatchAndExecuteEndpoint).
+                if (GlobalSettings.StorageHttpPort is { } storageHttpPort && !usedPorts.Contains(storageHttpPort))
+                {
+                    _logger.LogDebug(nameof(Host), nameof(CreateWebserverForHttpEndpointsAsync),
+                        $"Topaz will listen to plain-HTTP storage requests on: {_topazIpAddress}:{storageHttpPort}");
+                    hostOptions.Listen(IPAddress.Parse(_topazIpAddress), storageHttpPort);
+                    usedPorts.Add(storageHttpPort);
+                }
             })
             // Used to disable the obsolete messages displayed by Kestrel when starting
             .UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "True")
