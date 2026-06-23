@@ -281,7 +281,7 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
     internal void UpdateEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
         ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName, string partitionKey,
-                               string rowKey, IHeaderDictionary headers)
+                               string rowKey, IHeaderDictionary headers, bool merge = false)
     {
         logger.LogDebug(nameof(TableServiceDataPlane), nameof(UpdateEntity), "Executing {0}: {1} {2}", nameof(UpdateEntity), tableName, storageAccountName);
 
@@ -310,9 +310,11 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
             throw new EntityNotFoundException();
         }
 
+        var existingJson = File.ReadAllText(entityPath);
+
         if(etag != "*")
         {
-            var node = JsonNode.Parse(File.ReadAllText(entityPath));
+            var node = JsonNode.Parse(existingJson);
             if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
                 throw new UpdateConditionNotSatisfiedException();
         }
@@ -320,6 +322,19 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         File.Delete(entityPath);
 
         var root = JsonNode.Parse(rawContent)!.AsObject();
+
+        // Merge Entity (MERGE / PATCH / InsertOrMerge) overlays the request's properties
+        // onto the stored entity and PRESERVES stored properties the request omitted.
+        // A plain replace (the Update/Replace and InsertOrReplace path) drops every
+        // property absent from a partial merge body, silently nulling fields the caller
+        // never intended to clear.
+        if (merge && JsonNode.Parse(existingJson) is JsonObject existing)
+        {
+            foreach (var property in root)
+                existing[property.Key] = property.Value?.DeepClone();
+            root = existing;
+        }
+
         var newEtag = new ETag(DateTimeOffset.Now.Ticks.ToString());
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
 

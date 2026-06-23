@@ -35,6 +35,6 @@ internal sealed class PatchTableEntityEndpoint(Pipeline eventPipeline, ITopazLog
             RegexOptions.IgnoreCase);
 
         HandleUpdateEntityRequest(context.Request.Body, context.Request.Headers, matches,
-            subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, response);
+            subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, response, merge: true);
     }
 }

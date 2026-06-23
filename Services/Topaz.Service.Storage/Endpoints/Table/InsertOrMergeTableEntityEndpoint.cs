@@ -39,6 +39,6 @@ internal sealed class InsertOrMergeTableEntityEndpoint(Pipeline eventPipeline, I
             RegexOptions.IgnoreCase);
 
         HandleUpdateEntityRequest(context.Request.Body, context.Request.Headers, matches,
-            subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, response, upsert: true);
+            subscriptionIdentifier, resourceGroupIdentifier, storageAccount.Name, response, upsert: true, merge: true);
     }
 }

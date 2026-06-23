@@ -238,7 +238,8 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
         ResourceGroupIdentifier resourceGroupIdentifier,
         string storageAccountName,
         HttpResponseMessage response,
-        bool upsert = false)
+        bool upsert = false,
+        bool merge = false)
     {
         Logger.LogDebug(nameof(TableDataPlaneEndpointBase), nameof(HandleUpdateEntityRequest),
             "Matched the update operation.");
@@ -267,7 +268,7 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
         try
         {
             DataPlane.UpdateEntity(input, subscriptionIdentifier, resourceGroupIdentifier, tableName,
-                storageAccountName, partitionKey, rowKey, headers);
+                storageAccountName, partitionKey, rowKey, headers, merge);
 
             response.StatusCode = HttpStatusCode.NoContent;
         }
