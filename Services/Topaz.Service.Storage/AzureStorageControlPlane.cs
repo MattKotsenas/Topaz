@@ -530,6 +530,8 @@ internal sealed class AzureStorageControlPlane(
             new CreateOrUpdateStorageAccountRequest
             {
                 Location = storageAccount.Location,
+                Sku = storageAccount.Sku,
+                Kind = storageAccount.Kind,
                 Tags = storageAccount.Tags,
                 Properties = storageAccount.Properties
             });
