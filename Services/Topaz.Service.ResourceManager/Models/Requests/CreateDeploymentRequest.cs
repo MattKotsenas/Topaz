@@ -93,7 +93,21 @@ internal record CreateDeploymentRequest
         var content = BlobArtifactReader.TryReadBlobText(uri, logger);
         if (!string.IsNullOrWhiteSpace(content) && Properties != null)
         {
-            Properties.Template = content;
+            // Store the linked template as a JSON object (JsonElement), matching an
+            // inlined template. A raw string would be double-encoded by
+            // JsonSerializer.Serialize on the create path and fail to bind to the
+            // typed template downstream; an object round-trips correctly and
+            // ToTemplate() still reads it via ToString(). Fall back to the raw text
+            // if it is not parseable JSON so ToTemplate() can surface a clear error.
+            try
+            {
+                using var doc = JsonDocument.Parse(content!);
+                Properties.Template = doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                Properties.Template = content;
+            }
         }
     }
 
