@@ -167,12 +167,17 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                 case "PUT":
                 case "MERGE":
                 case "PATCH":
-                    // Update; on a missing entity fall back to insert (InsertOrMerge /
-                    // InsertOrReplace semantics the SDK uses for config writes).
+                    // Update an existing entity; on a missing entity fall back to insert
+                    // (InsertOrMerge / InsertOrReplace semantics the SDK uses for config
+                    // writes). MERGE and PATCH MERGE (preserve stored properties the request
+                    // body omits); PUT REPLACES (drops omitted properties). Without the
+                    // merge distinction a batched MERGE silently nulls fields the caller
+                    // never sent - the same defect as the non-batch InsertOrMerge path.
+                    var mergeSemantics = !string.Equals(op.Method, "PUT", StringComparison.OrdinalIgnoreCase);
                     try
                     {
                         DataPlane.UpdateEntity(bodyStream, subscription, resourceGroup, op.TableName, account,
-                            op.PartitionKey!, op.RowKey!, headers);
+                            op.PartitionKey!, op.RowKey!, headers, mergeSemantics);
                     }
                     catch (EntityNotFoundException)
                     {
