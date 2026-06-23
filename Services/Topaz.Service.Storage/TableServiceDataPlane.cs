@@ -205,13 +205,51 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
         if (etag != "*")
         {
-            var file = File.ReadAllText(entityPath);
-            var currentData = JsonSerializer.Deserialize<GenericTableEntity>(file, GlobalSettings.JsonOptions) ??
-                throw new Exception("Cannot proceed if entity data is null.");
-            if (currentData.ETag.ToString() != etag) throw new UpdateConditionNotSatisfiedException();
+            var node = JsonNode.Parse(File.ReadAllText(entityPath));
+            if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
+                throw new UpdateConditionNotSatisfiedException();
         }
 
         File.Delete(entityPath);
+    }
+
+    // Decide whether an If-Match precondition is satisfied for a stored entity. Two etag shapes occur:
+    //  1. The stored odata.etag (ETag.ToString("H") => "\"<ticks>\"") - matched directly (quote/weak-prefix
+    //     insensitive).
+    //  2. The legacy Cosmos.Table SDK derives the conditional etag from the entity TIMESTAMP, not odata.etag,
+    //     sending If-Match: W/"datetime'<url-encoded-timestamp>'" (classic Table Storage protocol). Match that
+    //     against the stored Timestamp. Without this, a conditional merge/update against an existing entity
+    //     always 412s because the SDK's timestamp-etag never equals the ticks-based odata.etag.
+    private static bool EtagMatches(string ifMatch, string? storedEtag, string? storedTimestamp)
+    {
+        if (string.IsNullOrEmpty(ifMatch)) return false;
+        if (NormalizeETag(storedEtag) == NormalizeETag(ifMatch)) return true;
+
+        var marker = "datetime'";
+        var idx = ifMatch.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0 && !string.IsNullOrEmpty(storedTimestamp))
+        {
+            var start = idx + marker.Length;
+            var end = ifMatch.IndexOf('\'', start);
+            if (end > start)
+            {
+                var decoded = Uri.UnescapeDataString(ifMatch.Substring(start, end - start));
+                if (string.Equals(decoded, storedTimestamp, StringComparison.Ordinal)) return true;
+                if (DateTimeOffset.TryParse(decoded, out var a) &&
+                    DateTimeOffset.TryParse(storedTimestamp, out var b) &&
+                    a.UtcDateTime == b.UtcDateTime) return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string NormalizeETag(string? etag)
+    {
+        if (string.IsNullOrEmpty(etag)) return string.Empty;
+        var e = etag!.Trim();
+        if (e.StartsWith("W/", StringComparison.Ordinal)) e = e.Substring(2);
+        return e.Trim('"');
     }
 
     internal void UpsertEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
@@ -274,10 +312,9 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
         if(etag != "*")
         {
-            var file = File.ReadAllText(entityPath);
-            var currentData = JsonSerializer.Deserialize<GenericTableEntity>(file, GlobalSettings.JsonOptions) ?? 
-                throw new Exception("Cannot proceed if entity data is null.");
-            if (currentData.ETag.ToString() != etag) throw new UpdateConditionNotSatisfiedException();
+            var node = JsonNode.Parse(File.ReadAllText(entityPath));
+            if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
+                throw new UpdateConditionNotSatisfiedException();
         }
 
         File.Delete(entityPath);
