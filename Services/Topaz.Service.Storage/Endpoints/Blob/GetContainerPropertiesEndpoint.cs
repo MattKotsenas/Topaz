@@ -15,7 +15,14 @@ internal sealed class GetContainerPropertiesEndpoint(Pipeline eventPipeline, ITo
 
     public string? ProviderNamespace => "Microsoft.Storage";
 
-    public string[] Endpoints => ["GET /{containerName}?restype=container"];
+    // GetContainerProperties is exposed over both GET and HEAD. The Azure Storage
+    // "does this container exist?" probe (e.g. CloudBlobContainer.Exists in the
+    // legacy SDK) issues a HEAD against {container}?restype=container and treats
+    // 200 as "exists" / 404 as "missing". Without the HEAD verb the request falls
+    // through to the blob-properties endpoint (HEAD /{containerName}/...) and a
+    // present container is wrongly reported as not found.
+    public string[] Endpoints =>
+        ["GET /{containerName}?restype=container", "HEAD /{containerName}?restype=container"];
 
     public string[] Permissions => ["Microsoft.Storage/storageAccounts/blobServices/containers/read"];
 
