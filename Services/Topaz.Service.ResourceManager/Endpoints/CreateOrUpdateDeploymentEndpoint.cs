@@ -70,6 +70,9 @@ public sealed class CreateOrUpdateDeploymentEndpoint(
             "Attempting to deserialize into {0}: {1}", nameof(CreateDeploymentRequest), content);
 
         var request = JsonSerializer.Deserialize<CreateDeploymentRequest>(content, GlobalSettings.JsonOptions);
+        // A deployment may reference its template by link instead of inlining it; read
+        // the linked blob (served by this emulator) back into the template before use.
+        request?.ResolveTemplateLinkIfNeeded(logger);
         if (request?.Properties == null || string.IsNullOrWhiteSpace(request.Properties.Mode))
         {
             response.StatusCode = HttpStatusCode.BadRequest;

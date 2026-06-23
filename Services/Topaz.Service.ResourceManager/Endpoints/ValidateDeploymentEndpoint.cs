@@ -74,6 +74,9 @@ public sealed class ValidateDeploymentEndpoint(
             "Attempting to deserialize into {0}: {1}", nameof(CreateDeploymentRequest), content);
 
         var request = JsonSerializer.Deserialize<CreateDeploymentRequest>(content, GlobalSettings.JsonOptions);
+        // A deployment may reference its template by link instead of inlining it; read
+        // the linked blob (served by this emulator) back into the template before use.
+        request?.ResolveTemplateLinkIfNeeded(logger);
         if (request?.Properties?.Template == null)
         {
             response.CreateErrorResponse("InvalidTemplate", "The template is missing or invalid.",
