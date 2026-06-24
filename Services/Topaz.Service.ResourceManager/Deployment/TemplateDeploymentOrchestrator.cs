@@ -61,7 +61,11 @@ public sealed class TemplateDeploymentOrchestrator(
         {
             resource.Id = new TemplateGenericProperty<string>
             {
-                Value = $"/subscriptions/{subscriptionIdentifier}/resourceGroups/{resourceGroupIdentifier}/providers/{resource.Type}/{resource.Name}"
+                Value = BuildResourceGroupScopeId(
+                    subscriptionIdentifier.Value.ToString(),
+                    resourceGroupIdentifier.Value,
+                    resource.Type.Value,
+                    resource.Name.Value)
             };
         }
 
@@ -103,7 +107,7 @@ public sealed class TemplateDeploymentOrchestrator(
             {
                 resource.Id = new TemplateGenericProperty<string>
                 {
-                    Value = $"/subscriptions/{subscriptionIdentifier}/providers/{resource.Type}/{resource.Name}"
+                    Value = BuildSubscriptionScopeId(subscriptionIdentifier.Value.ToString(), resource.Type.Value, resource.Name.Value)
                 };
             }
         }
@@ -135,7 +139,7 @@ public sealed class TemplateDeploymentOrchestrator(
         {
             resource.Id = new TemplateGenericProperty<string>
             {
-                Value = $"/providers/{resource.Type}/{resource.Name}"
+                Value = $"/providers/{resource.Type.Value}/{resource.Name.Value}"
             };
         }
 
@@ -166,7 +170,7 @@ public sealed class TemplateDeploymentOrchestrator(
         {
             resource.Id = new TemplateGenericProperty<string>
             {
-                Value = $"/providers/{resource.Type}/{resource.Name}"
+                Value = $"/providers/{resource.Type.Value}/{resource.Name.Value}"
             };
         }
 
@@ -295,6 +299,8 @@ public sealed class TemplateDeploymentOrchestrator(
             // certain resource types (e.g. Microsoft.Resources/deployments); fall back to the
             // type string preserved in the deserialized GenericResource.
             var resourceType = resource.Type?.Value ?? genericResource.Type ?? string.Empty;
+            var resourceName = resource.Name?.Value ?? genericResource.Name ?? string.Empty;
+            genericResource = NormalizeGenericResource(genericResource, resource, templateDeployment, resourceType, resourceName);
 
             switch (resourceType)
             {
@@ -406,6 +412,120 @@ public sealed class TemplateDeploymentOrchestrator(
 
         templateDeployment.Persist();
         logger.LogInformation($"Deployment {templateDeployment.Id} completed.");
+    }
+
+    private GenericResource NormalizeGenericResource(
+        GenericResource genericResource,
+        TemplateResource templateResource,
+        TemplateDeployment templateDeployment,
+        string resourceType,
+        string resourceName)
+    {
+        if (string.IsNullOrWhiteSpace(resourceType) || string.IsNullOrWhiteSpace(resourceName))
+            return genericResource;
+
+        var (subscriptionId, resourceGroupName) = GetDeploymentScope(templateDeployment.Id);
+        if (string.IsNullOrWhiteSpace(subscriptionId))
+            return genericResource;
+
+        var id = resourceType.Equals("Microsoft.Authorization/roleAssignments", StringComparison.OrdinalIgnoreCase)
+            ? BuildRoleAssignmentId(subscriptionId, resourceGroupName, templateResource, resourceName)
+            : resourceGroupName == null
+                ? BuildSubscriptionScopeId(subscriptionId, resourceType, resourceName)
+                : BuildResourceGroupScopeId(subscriptionId, resourceGroupName, resourceType, resourceName);
+
+        return new GenericResource
+        {
+            Id = id,
+            Name = resourceName,
+            Type = resourceType,
+            Location = genericResource.Location,
+            Tags = genericResource.Tags,
+            Sku = genericResource.Sku,
+            Kind = genericResource.Kind,
+            Properties = genericResource.Properties,
+            Identity = genericResource.Identity
+        };
+    }
+
+    private string BuildRoleAssignmentId(
+        string subscriptionId,
+        string? resourceGroupName,
+        TemplateResource templateResource,
+        string resourceName)
+    {
+        var scope = BuildRoleAssignmentScope(subscriptionId, resourceGroupName, templateResource.Scope?.Value);
+        var roleAssignmentName = resourceName.Split('/', StringSplitOptions.RemoveEmptyEntries)[^1];
+        return $"{scope}/providers/Microsoft.Authorization/roleAssignments/{roleAssignmentName}";
+    }
+
+    private string BuildRoleAssignmentScope(string subscriptionId, string? resourceGroupName, string? scope)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+        {
+            logger.LogWarning("Role assignment template resource did not include a scope. Deploying it at subscription scope.");
+            return $"/subscriptions/{subscriptionId}";
+        }
+
+        var trimmedScope = scope.Trim();
+        if (trimmedScope.StartsWith('/'))
+            return trimmedScope;
+
+        if (trimmedScope.StartsWith("subscriptions/", StringComparison.OrdinalIgnoreCase))
+            return $"/{trimmedScope}";
+
+        if (trimmedScope.StartsWith("resourceGroups/", StringComparison.OrdinalIgnoreCase))
+            return $"/subscriptions/{subscriptionId}/{trimmedScope}";
+
+        if (!trimmedScope.Contains('/'))
+        {
+            logger.LogWarning("Role assignment template resource scope could not be resolved. Deploying it at subscription scope.");
+            return $"/subscriptions/{subscriptionId}";
+        }
+
+        return resourceGroupName == null
+            ? $"/subscriptions/{subscriptionId}/providers/{trimmedScope.TrimStart('/')}"
+            : $"/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/{trimmedScope.TrimStart('/')}";
+    }
+
+    private static (string? SubscriptionId, string? ResourceGroupName) GetDeploymentScope(string deploymentId)
+    {
+        var idParts = deploymentId.TrimStart('/').Split('/');
+        var subscriptionId = idParts.Length > 1 && idParts[0].Equals("subscriptions", StringComparison.OrdinalIgnoreCase)
+            ? idParts[1]
+            : null;
+        var resourceGroupName = idParts.Length > 3 && idParts[2].Equals("resourceGroups", StringComparison.OrdinalIgnoreCase)
+            ? idParts[3]
+            : null;
+
+        return (subscriptionId, resourceGroupName);
+    }
+
+    private static string BuildSubscriptionScopeId(string subscriptionId, string type, string name) =>
+        type.Equals("Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase)
+            ? $"/subscriptions/{subscriptionId}/resourceGroups/{name}"
+            : BuildResourceId($"/subscriptions/{subscriptionId}", type, name);
+
+    private static string BuildResourceGroupScopeId(string subscriptionId, string resourceGroupName, string type, string name) =>
+        BuildResourceId($"/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}", type, name);
+
+    private static string BuildResourceId(string scope, string type, string name)
+    {
+        var typeSegments = type.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var nameSegments = name.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (typeSegments.Length == 0 || nameSegments.Length == 0)
+            return $"{scope}/providers/{type}/{name}";
+
+        var id = $"{scope}/providers/{typeSegments[0]}";
+        for (var i = 1; i < typeSegments.Length; i++)
+        {
+            id += $"/{typeSegments[i]}";
+            var nameIndex = i - 1;
+            if (nameIndex < nameSegments.Length)
+                id += $"/{nameSegments[nameIndex]}";
+        }
+
+        return id;
     }
 
     /// <summary>
@@ -590,7 +710,11 @@ public sealed class TemplateDeploymentOrchestrator(
             {
                 innerResource.Id = new TemplateGenericProperty<string>
                 {
-                    Value = $"/subscriptions/{nestedSubId}/resourceGroups/{nestedRgId}/providers/{innerResource.Type}/{innerResource.Name}"
+                    Value = BuildResourceGroupScopeId(
+                        nestedSubId.Value.ToString(),
+                        nestedRgId.Value,
+                        innerResource.Type.Value,
+                        innerResource.Name.Value)
                 };
             }
 
