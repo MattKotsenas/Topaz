@@ -7,6 +7,7 @@ using Microsoft.WindowsAzure.ResourceStack.Common.Extensions;
 using Newtonsoft.Json.Linq;
 using Topaz.EventPipeline;
 using Topaz.ResourceManager;
+using Topaz.Service.Authorization;
 using Topaz.Service.AppService;
 using Topaz.Service.ContainerRegistry;
 using Topaz.Service.EventHub;
@@ -326,6 +327,12 @@ public sealed class TemplateDeploymentOrchestrator(
                     break;
                 case "Microsoft.ManagedIdentity/userAssignedIdentities":
                     controlPlane = ManagedIdentityControlPlane.New(eventPipeline, logger);
+                    break;
+                case "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials":
+                    controlPlane = FederatedIdentityCredentialControlPlane.New(logger);
+                    break;
+                case "Microsoft.Authorization/roleAssignments":
+                    controlPlane = AuthorizationControlPlane.New(eventPipeline, logger);
                     break;
                 case "Microsoft.EventHub/namespaces":
                     controlPlane = EventHubServiceControlPlane.New(logger);
