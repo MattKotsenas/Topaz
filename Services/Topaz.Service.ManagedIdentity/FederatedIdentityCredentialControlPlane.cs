@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Topaz.ResourceManager;
 using Topaz.Service.ManagedIdentity.Models;
 using Topaz.Service.ManagedIdentity.Models.Requests;
 using Topaz.Service.Shared;
@@ -9,6 +11,7 @@ namespace Topaz.Service.ManagedIdentity;
 internal sealed class FederatedIdentityCredentialControlPlane(
     ManagedIdentityResourceProvider provider,
     ITopazLogger logger)
+    : IControlPlane
 {
     private const string SubresourceName = "federatedIdentityCredentials";
 
@@ -19,6 +22,47 @@ internal sealed class FederatedIdentityCredentialControlPlane(
 
     public static FederatedIdentityCredentialControlPlane New(ITopazLogger logger) =>
         new(new ManagedIdentityResourceProvider(logger), logger);
+
+    public OperationResult Deploy(GenericResource resource)
+    {
+        var properties = JsonSerializer.Deserialize<CreateOrUpdateFederatedIdentityCredentialRequest.FederatedIdentityCredentialProperties>(
+            JsonSerializer.Serialize(resource.Properties, GlobalSettings.JsonOptions),
+            GlobalSettings.JsonOptions);
+        if (properties == null)
+        {
+            logger.LogError($"Couldn't parse generic resource `{resource.Id}` as a federated identity credential.");
+            return OperationResult.Failed;
+        }
+
+        var segments = resource.Id.Split("/", StringSplitOptions.RemoveEmptyEntries);
+        var managedIdentitySegmentIndex = Array.FindIndex(
+            segments,
+            segment => segment.Equals("userAssignedIdentities", StringComparison.OrdinalIgnoreCase));
+        var credentialSegmentIndex = Array.FindIndex(
+            segments,
+            segment => segment.Equals(SubresourceName, StringComparison.OrdinalIgnoreCase));
+
+        if (managedIdentitySegmentIndex < 0 ||
+            credentialSegmentIndex < 0 ||
+            managedIdentitySegmentIndex + 1 >= segments.Length ||
+            credentialSegmentIndex + 1 >= segments.Length)
+        {
+            logger.LogError($"Couldn't parse federated identity credential path from `{resource.Id}`.");
+            return OperationResult.Failed;
+        }
+
+        var result = CreateOrUpdate(
+            resource.GetSubscription(),
+            resource.GetResourceGroup(),
+            segments[managedIdentitySegmentIndex + 1],
+            segments[credentialSegmentIndex + 1],
+            new CreateOrUpdateFederatedIdentityCredentialRequest
+            {
+                Properties = properties
+            });
+
+        return result.Result;
+    }
 
     public ControlPlaneOperationResult<FederatedIdentityCredentialResource> CreateOrUpdate(
         SubscriptionIdentifier subscriptionIdentifier,
