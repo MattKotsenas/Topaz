@@ -21,6 +21,8 @@ namespace Topaz.Service.ResourceManager;
 
 internal sealed class ArmTemplateEngineFacade(ITopazLogger logger)
 {
+    private const string DeploymentApiVersion = "2022-09-01";
+
     public Template Parse(string input)
     {
         var template = TemplateParsingEngine.ParseTemplate(input);
@@ -34,7 +36,7 @@ internal sealed class ArmTemplateEngineFacade(ITopazLogger logger)
         var inputParameters = BuildInputParameters(propertiesParameters);
 
         TemplateEngine.ProcessTemplateLanguageExpressions("topaz", subscriptionIdentifier.Value.ToString(),
-            resourceGroupIdentifier.Value, template, "", inputParameters!,
+            resourceGroupIdentifier.Value, template, DeploymentApiVersion, inputParameters!,
             metadataInsensitive,
             new PreprocessingTemplateExtensionResolver(template, null, null,
                 new FactBasedExtensionConfigSchemaDirectoryFactory().GetOrCreateDirectory()),
@@ -52,7 +54,7 @@ internal sealed class ArmTemplateEngineFacade(ITopazLogger logger)
         var inputParameters = BuildInputParameters(propertiesParameters);
 
         TemplateEngine.ProcessTemplateLanguageExpressions("topaz", subscriptionIdentifier.Value.ToString(),
-            "", template, "", inputParameters!,
+            "", template, DeploymentApiVersion, inputParameters!,
             metadataInsensitive,
             new PreprocessingTemplateExtensionResolver(template, null, null,
                 new FactBasedExtensionConfigSchemaDirectoryFactory().GetOrCreateDirectory()),
@@ -83,7 +85,7 @@ internal sealed class ArmTemplateEngineFacade(ITopazLogger logger)
         var inputParameters = BuildInputParameters(propertiesParameters);
 
         TemplateEngine.ProcessTemplateLanguageExpressions("topaz", "",
-            "", template, "", inputParameters!,
+            "", template, DeploymentApiVersion, inputParameters!,
             metadataInsensitive,
             new PreprocessingTemplateExtensionResolver(template, null, null,
                 new FactBasedExtensionConfigSchemaDirectoryFactory().GetOrCreateDirectory()),
