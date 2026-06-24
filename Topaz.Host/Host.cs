@@ -169,6 +169,10 @@ public class Host
 
         httpEndpoints.Add(new GetHealthEndpoint());
 
+        // C1: register the generic resource passthrough GET LAST so the first-match Router only
+        // selects it for provider/type/name paths that no typed endpoint claimed (avoids shadowing).
+        httpEndpoints.Add(new GenericResourceGetEndpoint(_logger));
+
         // Start the built-in HTTP CONNECT proxy. This remaps port-443 CONNECT tunnels
         // targeting Topaz hostnames to the resource-manager port so that MSAL's user-realm
         // discovery pre-flight works on non-Docker local installations without root privileges.

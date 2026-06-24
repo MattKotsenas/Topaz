@@ -372,7 +372,10 @@ public sealed class TemplateDeploymentOrchestrator(
                     HandleNestedDeployment(genericResource, templateDeployment, evaluatedResourceJson, ref hasProvisioningFailed);
                     break;
                 default:
-                    logger.LogWarning($"Deployment of resource type {resourceType} is not yet supported.");
+                    logger.LogInformation(
+                        $"Resource type {resourceType} is not explicitly modeled; persisting it via the generic " +
+                        "resource passthrough so it remains retrievable.");
+                    new GenericResourceProvider(logger).Persist(genericResource);
                     break;
             }
 
