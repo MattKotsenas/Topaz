@@ -292,8 +292,9 @@ public sealed class TemplateDeploymentOrchestrator(
         foreach (var resource in orderedResources)
         {
             IControlPlane? controlPlane = null;
+            var evaluatedResourceJson = GetEvaluatedResourceJson(templateDeployment, resource);
             var genericResource =
-                JsonSerializer.Deserialize<GenericResource>(resource.ToJson(), GlobalSettings.JsonOptions)!;
+                JsonSerializer.Deserialize<GenericResource>(evaluatedResourceJson, GlobalSettings.JsonOptions)!;
 
             // resource.Type.Value may be null after subscription-scope template processing for
             // certain resource types (e.g. Microsoft.Resources/deployments); fall back to the
@@ -368,7 +369,7 @@ public sealed class TemplateDeploymentOrchestrator(
                     controlPlane = ResourceGroupControlPlane.New(eventPipeline, logger);
                     break;
                 case "Microsoft.Resources/deployments":
-                    HandleNestedDeployment(genericResource, templateDeployment, resource, ref hasProvisioningFailed);
+                    HandleNestedDeployment(genericResource, templateDeployment, evaluatedResourceJson, ref hasProvisioningFailed);
                     break;
                 default:
                     logger.LogWarning($"Deployment of resource type {resourceType} is not yet supported.");
@@ -446,6 +447,22 @@ public sealed class TemplateDeploymentOrchestrator(
             Properties = genericResource.Properties,
             Identity = genericResource.Identity
         };
+    }
+
+    private string GetEvaluatedResourceJson(TemplateDeployment templateDeployment, TemplateResource resource)
+    {
+        var (subscriptionId, resourceGroupName) = GetDeploymentScope(templateDeployment.Id);
+        if (string.IsNullOrWhiteSpace(subscriptionId))
+            return resource.ToJson();
+
+        var resourceObject = _armTemplateEngineFacade.EvaluateResource(
+            subscriptionId,
+            resourceGroupName ?? string.Empty,
+            templateDeployment.Template,
+            resource,
+            logger);
+
+        return resourceObject.ToString(Newtonsoft.Json.Formatting.None);
     }
 
     private string BuildRoleAssignmentId(
@@ -585,13 +602,13 @@ public sealed class TemplateDeploymentOrchestrator(
     private void HandleNestedDeployment(
         GenericResource genericResource,
         TemplateDeployment parentDeployment,
-        TemplateResource resource,
+        string evaluatedResourceJson,
         ref bool hasProvisioningFailed)
     {
         try
         {
             // Step 1: Parse raw resource JSON to extract nested template and context
-            var resourceJson = JsonSerializer.Deserialize<JsonElement>(resource.ToJson(), GlobalSettings.JsonOptions);
+            var resourceJson = JsonSerializer.Deserialize<JsonElement>(evaluatedResourceJson, GlobalSettings.JsonOptions);
             var resourceObj = resourceJson.Deserialize<Dictionary<string, JsonElement>>(GlobalSettings.JsonOptions);
             
             if (resourceObj == null)

@@ -3,10 +3,12 @@ using Azure.Deployments.Core.Configuration;
 using Azure.Deployments.Core.Definitions.Schema;
 using Azure.Deployments.Core.Diagnostics;
 using Azure.Deployments.Core.ErrorResponses;
+using Azure.Deployments.Core.Json;
 using Azure.Deployments.Expression.Engines;
 using Azure.Deployments.Templates.Engines;
 using Microsoft.WindowsAzure.ResourceStack.Common.Collections;
 using Microsoft.WindowsAzure.ResourceStack.Common.Extensions;
+using Microsoft.WindowsAzure.ResourceStack.Common.Json;
 using Newtonsoft.Json.Linq;
 using System.Text.Json;
 using Topaz.Service.ResourceManager.Models.Requests;
@@ -152,6 +154,130 @@ internal sealed class ArmTemplateEngineFacade
 
             result[kv.Key] = entry;
         }
+        return result;
+    }
+
+    public JObject EvaluateResource(
+        string subscriptionId,
+        string resourceGroupName,
+        Template template,
+        TemplateResource resource,
+        ITopazLogger logger)
+    {
+        var resourceJson = JsonExtensions.ToJson(resource, SerializerSettings.SerializerObjectTypeSettings);
+        var resourceObject = JObject.Parse(resourceJson);
+
+        var metrics = new TemplateMetricsRecorder();
+        var evalCtx = TemplateEngine.GetExpressionEvaluationContext(
+            "topaz", subscriptionId, resourceGroupName, template, metrics);
+
+        JToken EvaluateToken(JToken token)
+        {
+            if (token is JValue { Type: JTokenType.String } value)
+            {
+                var rawString = value.Value<string>();
+                if (rawString != null && ExpressionsEngine.IsLanguageExpression(rawString))
+                {
+                    try
+                    {
+                        var evaluated = ExpressionsEngine.EvaluateLanguageExpression(
+                            rawString, evalCtx, new TemplateErrorAdditionalInfo());
+
+                        return evaluated ?? JValue.CreateNull();
+                    }
+                    catch (Exception ex)
+                    {
+                        var compatibleExpression = AddCurrentSubscriptionIdToSubscriptionResourceId(rawString, subscriptionId);
+                        if (compatibleExpression != null)
+                        {
+                            try
+                            {
+                                return ExpressionsEngine.EvaluateLanguageExpression(
+                                    compatibleExpression, evalCtx, new TemplateErrorAdditionalInfo()) ?? JValue.CreateNull();
+                            }
+                            catch (Exception compatibleEx)
+                            {
+                                logger.LogWarning($"ARM expression '{rawString}' could not be evaluated: {ex.Message}; compatibility retry failed: {compatibleEx.Message}");
+                                return token;
+                            }
+                        }
+
+                        logger.LogWarning($"ARM expression '{rawString}' could not be evaluated: {ex.Message}");
+                    }
+                }
+
+                return token;
+            }
+
+            if (token is JObject obj)
+            {
+                foreach (var property in obj.Properties().ToList())
+                    property.Value = EvaluateToken(property.Value);
+            }
+            else if (token is JArray array)
+            {
+                for (var i = 0; i < array.Count; i++)
+                    array[i] = EvaluateToken(array[i]);
+            }
+
+            return token;
+        }
+
+        EvaluateToken(resourceObject);
+        return resourceObject;
+    }
+
+    private static string? AddCurrentSubscriptionIdToSubscriptionResourceId(string expression, string subscriptionId)
+    {
+        const string functionName = "subscriptionResourceId";
+        var trimmed = expression.Trim();
+        if (!trimmed.StartsWith($"[{functionName}(", StringComparison.OrdinalIgnoreCase) || !trimmed.EndsWith(")]"))
+            return null;
+
+        var arguments = trimmed.Substring(functionName.Length + 2, trimmed.Length - functionName.Length - 4);
+        if (SplitTopLevelArguments(arguments).Count != 2)
+            return null;
+
+        return $"[{functionName}('{subscriptionId}', {arguments})]";
+    }
+
+    private static List<string> SplitTopLevelArguments(string arguments)
+    {
+        var result = new List<string>();
+        var start = 0;
+        var depth = 0;
+        var inString = false;
+
+        for (var i = 0; i < arguments.Length; i++)
+        {
+            var c = arguments[i];
+            if (c == '\'')
+            {
+                if (inString && i + 1 < arguments.Length && arguments[i + 1] == '\'')
+                {
+                    i++;
+                    continue;
+                }
+
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+                continue;
+
+            if (c == '(')
+                depth++;
+            else if (c == ')')
+                depth--;
+            else if (c == ',' && depth == 0)
+            {
+                result.Add(arguments[start..i].Trim());
+                start = i + 1;
+            }
+        }
+
+        result.Add(arguments[start..].Trim());
         return result;
     }
 }
