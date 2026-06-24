@@ -40,7 +40,43 @@ internal sealed class AuthorizationControlPlane(
 
     public OperationResult Deploy(GenericResource resource)
     {
-        throw new NotImplementedException();
+        var roleAssignment = resource.As<RoleAssignmentResource, RoleAssignmentResourceProperties>();
+        if (roleAssignment == null)
+        {
+            logger.LogError($"Couldn't parse generic resource `{resource.Id}` as a role assignment.");
+            return OperationResult.Failed;
+        }
+
+        const string roleAssignmentPath = "/providers/Microsoft.Authorization/roleAssignments/";
+        var roleAssignmentPathIndex = roleAssignment.Id.IndexOf(roleAssignmentPath, StringComparison.OrdinalIgnoreCase);
+        if (roleAssignmentPathIndex < 0)
+        {
+            logger.LogError($"Couldn't parse role assignment scope from `{roleAssignment.Id}`.");
+            return OperationResult.Failed;
+        }
+
+        var scope = roleAssignment.Id[..roleAssignmentPathIndex];
+        var roleAssignmentName = roleAssignment.Id.Split("/", StringSplitOptions.RemoveEmptyEntries)[^1];
+        var result = CreateOrUpdateRoleAssignment(
+            roleAssignment.GetSubscription(),
+            RoleAssignmentName.From(roleAssignmentName),
+            new CreateOrUpdateRoleAssignmentRequest
+            {
+                Properties = new RoleAssignmentProperties
+                {
+                    RoleDefinitionId = roleAssignment.Properties.RoleDefinitionId,
+                    PrincipalId = roleAssignment.Properties.PrincipalId,
+                    PrincipalType = roleAssignment.Properties.PrincipalType,
+                    Description = roleAssignment.Properties.Description,
+                    Condition = roleAssignment.Properties.Condition,
+                    ConditionVersion = roleAssignment.Properties.ConditionVersion,
+                    DelegatedManagedIdentityResourceId = roleAssignment.Properties.DelegatedManagedIdentityResourceId,
+                    Scope = roleAssignment.Properties.Scope
+                }
+            },
+            scope);
+
+        return result.Result;
     }
 
     public ControlPlaneOperationResult<RoleDefinitionResource?> CreateOrUpdateRoleDefinition(
