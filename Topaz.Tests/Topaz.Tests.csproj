@@ -59,6 +59,7 @@
     <ProjectReference Include="../Topaz.Identity/Topaz.Identity.csproj" />
     <ProjectReference Include="../Topaz.ResourceManager/Topaz.ResourceManager.csproj" />
     <ProjectReference Include="../Services/Topaz.Service.Storage/Topaz.Service.Storage.csproj" />
+    <ProjectReference Include="../Services/Topaz.Service.ResourceManager/Topaz.Service.ResourceManager.csproj" />
   </ItemGroup>
 
   <ItemGroup>
