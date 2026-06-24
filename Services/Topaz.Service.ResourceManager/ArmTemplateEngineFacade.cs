@@ -378,7 +378,7 @@ internal sealed class ArmTemplateEngineFacade(ITopazLogger logger)
 
         var metrics = new TemplateMetricsRecorder();
         var evalCtx = TemplateEngine.GetExpressionEvaluationContext(
-            "topaz", subscriptionId, resourceGroupName, template, metrics);
+            "topaz", subscriptionId, resourceGroupName, template, metrics, copyContext: resource.CopyContext);
 
         JToken EvaluateToken(JToken token)
         {

@@ -4,6 +4,7 @@ using Newtonsoft.Json.Linq;
 using Azure.Core;
 using Azure.Deployments.Core.Entities;
 using System.Reflection;
+using System.Text.Json;
 using Topaz.EventPipeline;
 using Topaz.Service.ResourceManager;
 using Topaz.Service.ResourceManager.Deployment;
@@ -158,6 +159,123 @@ public class ArmDeploymentResourceEvaluationTests
         }
         """;
 
+    private static string BuildCopyLoopNestedFederatedCredentialTemplate() => """
+        {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "name": {
+              "type": "string"
+            },
+            "federatedIdentityCredentials": {
+              "type": "array"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[parameters('name')]",
+              "location": "westeurope"
+            },
+            {
+              "copy": {
+                "name": "fic",
+                "count": "[length(parameters('federatedIdentityCredentials'))]"
+              },
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2022-09-01",
+              "name": "[format('{0}-fic', parameters('federatedIdentityCredentials')[copyIndex()].name)]",
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('name'))]"
+              ],
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "identityName": {
+                    "value": "[parameters('name')]"
+                  },
+                  "ficName": {
+                    "value": "[parameters('federatedIdentityCredentials')[copyIndex()].name]"
+                  },
+                  "issuer": {
+                    "value": "[parameters('federatedIdentityCredentials')[copyIndex()].issuer]"
+                  },
+                  "subject": {
+                    "value": "[parameters('federatedIdentityCredentials')[copyIndex()].subject]"
+                  },
+                  "audiences": {
+                    "value": "[parameters('federatedIdentityCredentials')[copyIndex()].audiences]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "parameters": {
+                    "identityName": {
+                      "type": "string"
+                    },
+                    "ficName": {
+                      "type": "string"
+                    },
+                    "issuer": {
+                      "type": "string"
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "audiences": {
+                      "type": "array"
+                    }
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+                      "apiVersion": "2023-01-31",
+                      "name": "[format('{0}/{1}', parameters('identityName'), parameters('ficName'))]",
+                      "properties": {
+                        "issuer": "[parameters('issuer')]",
+                        "subject": "[parameters('subject')]",
+                        "audiences": "[parameters('audiences')]"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+        """;
+
+    private static JsonElement BuildCopyLoopNestedFederatedCredentialParameters(string identityName, string credentialName)
+    {
+        var json = $$"""
+            {
+              "name": {
+                "value": "{{identityName}}"
+              },
+              "federatedIdentityCredentials": {
+                "value": [
+                  {
+                    "name": "{{credentialName}}",
+                    "issuer": "https://token.actions.githubusercontent.com",
+                    "subject": "repo:example/repository:ref:refs/heads/main",
+                    "audiences": [
+                      "api://AzureADTokenExchange"
+                    ]
+                  }
+                ]
+              }
+            }
+            """;
+
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
     [Test]
     public void EvaluateResource_WhenPropertyContainsSubscriptionResourceId_ReturnsPlainJsonValue()
     {
@@ -274,13 +392,51 @@ public class ArmDeploymentResourceEvaluationTests
         });
     }
 
+    [Test]
+    public void ResourceGroupNestedDeployment_WhenCreatedByCopyLoopAndInnerTemplateContainsFederatedCredential_PersistsCredential()
+    {
+        var logger = new CapturingLogger();
+        var pipeline = new Pipeline(logger);
+        var subscriptionId = new SubscriptionIdentifier(Guid.NewGuid());
+        var resourceGroupId = new ResourceGroupIdentifier($"rg-copy-fic-{Guid.NewGuid():N}"[..24]);
+        var identityName = "copy-fic-identity";
+        var credentialName = "copy-fic";
+        var deployment = ExecuteResourceGroupDeployment(
+            subscriptionId,
+            resourceGroupId,
+            "copy-loop-nested-fic",
+            BuildCopyLoopNestedFederatedCredentialTemplate(),
+            logger,
+            pipeline,
+            BuildCopyLoopNestedFederatedCredentialParameters(identityName, credentialName));
+
+        var credential = new ManagedIdentityResourceProvider(logger)
+            .GetSubresourceAs<FederatedIdentityCredentialResource>(
+                subscriptionId,
+                resourceGroupId,
+                credentialName,
+                identityName,
+                "federatedIdentityCredentials");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(deployment.Properties.ProvisioningState, Is.EqualTo("Succeeded"),
+                string.Join(Environment.NewLine, logger.Errors));
+            Assert.That(credential, Is.Not.Null);
+            Assert.That(credential!.Properties.Issuer, Is.EqualTo("https://token.actions.githubusercontent.com"));
+            Assert.That(credential.Properties.Subject, Is.EqualTo("repo:example/repository:ref:refs/heads/main"));
+            Assert.That(credential.Properties.Audiences, Does.Contain("api://AzureADTokenExchange"));
+        });
+    }
+
     private static DeploymentResource ExecuteResourceGroupDeployment(
         SubscriptionIdentifier subscriptionId,
         ResourceGroupIdentifier resourceGroupId,
         string deploymentName,
         string templateJson,
         ITopazLogger logger,
-        Pipeline pipeline)
+        Pipeline pipeline,
+        JsonElement? parameters = null)
     {
         SubscriptionControlPlane.New(pipeline, logger).Create(subscriptionId, "arm-template-test", null);
         new ResourceGroupResourceProvider(logger).CreateOrUpdate(
@@ -301,7 +457,7 @@ public class ArmDeploymentResourceEvaluationTests
             { ResourceManagerDeploymentMetadata.ResourceGroupKey, JToken.Parse(new ResourceGroupMetadata(subscriptionId, resourceGroupId, new AzureLocation("westeurope")).ToString()) }
         }.ToInsensitiveDictionary(x => x.Key, x => x.Value);
 
-        facade.ProcessTemplate(subscriptionId, resourceGroupId, template, metadata, null);
+        facade.ProcessTemplate(subscriptionId, resourceGroupId, template, metadata, parameters);
         foreach (var resource in template.Resources)
         {
             resource.Id = new TemplateGenericProperty<string>
@@ -315,7 +471,13 @@ public class ArmDeploymentResourceEvaluationTests
             resourceGroupId,
             deploymentName,
             new AzureLocation("westeurope"),
-            DeploymentResourceProperties.New("Incremental", templateJson, null));
+            DeploymentResourceProperties.New("Incremental", templateJson, null))
+        {
+            Properties =
+            {
+                Parameters = parameters
+            }
+        };
         var resourceProvider = new ResourceManagerResourceProvider(logger);
         var orchestrator = new TemplateDeploymentOrchestrator(
             pipeline,
