@@ -618,18 +618,14 @@ public sealed class TemplateDeploymentOrchestrator(
                 return;
             }
 
-            // Extract resourceGroup property
-            if (!resourceObj.TryGetValue("resourceGroup", out var rgElement))
-            {
-                logger.LogWarning($"Nested deployment '{genericResource.Name}' has no 'resourceGroup' property; subscription-scoped nested deployments are not yet supported.");
-                return;
-            }
+            var (_, parentResourceGroupName) = GetDeploymentScope(parentDeployment.Id);
+            var nestedRgName = resourceObj.TryGetValue("resourceGroup", out var rgElement)
+                ? rgElement.GetString()
+                : parentResourceGroupName;
 
-            var nestedRgName = rgElement.GetString();
             if (string.IsNullOrWhiteSpace(nestedRgName))
             {
-                logger.LogWarning($"Nested deployment '{genericResource.Name}' has empty 'resourceGroup' property.");
-                hasProvisioningFailed = true;
+                logger.LogWarning($"Nested deployment '{genericResource.Name}' has no target resource group; subscription-scoped nested deployments must include a resourceGroup property.");
                 return;
             }
 
@@ -679,8 +675,8 @@ public sealed class TemplateDeploymentOrchestrator(
             var subscriptionMetadata = new SubscriptionMetadata(nestedSubId);
             
             // Extract parent RG metadata to get location
-            var parentRgMetadata = parentDeployment.Metadata.TryGetValue(DeploymentMetadata.ResourceGroupKey, out var rgMetadataToken)
-                ? JsonSerializer.Deserialize<ResourceGroupMetadata>(rgMetadataToken.ToString(), GlobalSettings.JsonOptions)
+            var parentResourceGroupLocation = parentDeployment.Metadata.TryGetValue(DeploymentMetadata.ResourceGroupKey, out var rgMetadataToken)
+                ? rgMetadataToken["location"]?.Value<string>()
                 : null;
 
             AzureLocation nestedLocation;
@@ -688,9 +684,9 @@ public sealed class TemplateDeploymentOrchestrator(
             {
                 nestedLocation = new AzureLocation(genericResource.Location);
             }
-            else if (parentRgMetadata?.Location != null)
+            else if (!string.IsNullOrWhiteSpace(parentResourceGroupLocation))
             {
-                nestedLocation = parentRgMetadata.Location;
+                nestedLocation = new AzureLocation(parentResourceGroupLocation);
             }
             else if (parentDeployment.Metadata.TryGetValue(DeploymentMetadata.LocationKey, out var parentLocationToken)
                      && parentLocationToken.Type == JTokenType.String
