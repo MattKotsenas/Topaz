@@ -41,7 +41,7 @@ internal sealed class AuthorizationControlPlane(
     public OperationResult Deploy(GenericResource resource)
     {
         var roleAssignment = resource.As<RoleAssignmentResource, RoleAssignmentResourceProperties>();
-        if (roleAssignment == null)
+        if (roleAssignment?.Properties == null)
         {
             logger.LogError($"Couldn't parse generic resource `{resource.Id}` as a role assignment.");
             return OperationResult.Failed;
