@@ -177,6 +177,14 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
 
         QueueMessage message;
 
+        // TOCTOU / upstream note: this file-backed queue is lock-free, so the File.Exists check below and
+        // the File.WriteAllText at the end of this method are NOT atomic. A DeleteMessage landing between the
+        // check (or the subsequent ReadAllText) and the write can still RESURRECT a just-deleted message -
+        // but with its prior content intact, which is parseable and only causes a spurious re-dequeue
+        // (consumers are expected to be idempotent), NOT the fatal empty-content crash the check below fixes.
+        // Closing this window fully needs per-message serialization (e.g. a per-queue lock or open-with-
+        // FileMode.Open exclusive access mapping a missing file to MessageNotFound). Deliberately left out to
+        // keep the change surgical; revisit if exact Azure update/delete atomicity is required.
         if (!File.Exists(messagePath))
         {
             // Azure Queue Storage's Update Message returns 404 MessageNotFound when the target message no
@@ -365,7 +373,12 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
                 message.DequeueCount++;
                 message.UpdateVisibility(visibilityTimeout);
 
-                // Persist the updated message
+                // Persist the updated message (dequeue-count + visibility writeback).
+                // TOCTOU / upstream note: same lock-free read-modify-write window as PutMessage (see the note
+                // there). A concurrent DeleteMessage between ReadAllText above and this WriteAllText can
+                // re-create a just-deleted message; it keeps its content (parseable -> at worst a spurious
+                // re-dequeue), so it is not the fatal empty-content path. Per-message serialization would
+                // close it.
                 File.WriteAllText(filePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
 
                 messages.Add(message);
