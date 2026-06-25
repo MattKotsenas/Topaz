@@ -209,6 +209,39 @@ public class QueueStorageTests
     }
 
     [Test]
+    public void Queue_UpdateMessage_OnDeletedMessage_ReturnsNotFound_AndDoesNotResurrectEmptyMessage()
+    {
+        // Arrange
+        var queueClient = new QueueServiceClient(TopazResourceHelpers.GetAzureStorageConnectionString(StorageAccountName, _key));
+        queueClient.CreateQueue("update-deleted-queue");
+        var queue = queueClient.GetQueueClient("update-deleted-queue");
+
+        queue.SendMessage("payload that must never become empty");
+
+        // Receive + delete the message so its server-side state no longer exists.
+        var received = queue.ReceiveMessage().Value;
+        Assert.That(received, Is.Not.Null);
+        queue.DeleteMessage(received.MessageId, received.PopReceipt);
+
+        // Precondition: the queue is genuinely empty after the delete.
+        Assert.That(queue.ReceiveMessages(32).Value.ToList(), Is.Empty,
+            "precondition: the queue must be empty after the message is deleted");
+
+        // Act: a late, in-flight visibility-only update for the now-deleted message -- the at-least-once
+        // race a fast consumer routinely produces (delete races a still-in-flight visibility extension).
+        // Azure Queue Storage returns 404 MessageNotFound; it must NOT resurrect the message, and certainly
+        // not as an empty-content one (a visibility-only update carries no body).
+        var ex = Assert.Throws<RequestFailedException>(() =>
+            queue.UpdateMessage(received.MessageId, received.PopReceipt, visibilityTimeout: TimeSpan.FromSeconds(30)));
+        Assert.That(ex!.Status, Is.EqualTo(404), "update of a deleted message must report MessageNotFound");
+
+        // Assert: nothing was resurrected. Before the fix, the update created an empty-content message that
+        // every subsequent dequeue returned (a <MessageText /> that breaks consumers parsing the body).
+        Assert.That(queue.ReceiveMessages(32).Value.ToList(), Is.Empty,
+            "an update to a deleted message must not create an empty-content message");
+    }
+
+    [Test]
     public void Queue_PutMessage_WithVisibilityTimeout()
     {
         // Arrange

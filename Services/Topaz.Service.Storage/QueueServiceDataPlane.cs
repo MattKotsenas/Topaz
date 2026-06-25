@@ -177,32 +177,34 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
 
         QueueMessage message;
 
-        if (File.Exists(messagePath))
+        if (!File.Exists(messagePath))
         {
-            var existingContent = File.ReadAllText(messagePath);
-            message = JsonSerializer.Deserialize<QueueMessage>(existingContent, GlobalSettings.JsonOptions)
-                ?? throw new InvalidOperationException("Failed to deserialize message");
-            
-            // Update existing message
-            // A visibility-only update sends no request body, so the content arrives empty; it must
-            // preserve the existing message content. Only overwrite the content when new content was
-            // actually provided (Azure's update-message only changes content when the request carries one).
-            if (!string.IsNullOrEmpty(content))
-            {
-                message.UpdateContent(content);
-            }
-            message.UpdateVisibility(visibilityTimeout);
+            // Azure Queue Storage's Update Message returns 404 MessageNotFound when the target message no
+            // longer exists (it was already dequeued-and-deleted by another consumer). Creating a message
+            // here instead is wrong on two counts: it resurrects a message the client already finished with,
+            // and a visibility-only update carries no body, so the resurrected message has EMPTY content.
+            // That empty message is then handed back on every subsequent dequeue and breaks any consumer that
+            // parses the message body. Under fast polling a consumer's delete and a late in-flight visibility
+            // update race routinely, so this path is hit in practice. Match Azure: report not-found.
+            logger.LogDebug(nameof(QueueServiceDataPlane), nameof(PutMessage),
+                "Update for non-existent message {0} in queue {1}; returning MessageNotFound.", messageId, queueName);
+            return new DataPlaneOperationResult<QueueMessage>(OperationResult.NotFound, null,
+                "Message not found.", "MessageNotFound");
         }
-        else
+
+        var existingContent = File.ReadAllText(messagePath);
+        message = JsonSerializer.Deserialize<QueueMessage>(existingContent, GlobalSettings.JsonOptions)
+            ?? throw new InvalidOperationException("Failed to deserialize message");
+
+        // Update existing message
+        // A visibility-only update sends no request body, so the content arrives empty; it must
+        // preserve the existing message content. Only overwrite the content when new content was
+        // actually provided (Azure's update-message only changes content when the request carries one).
+        if (!string.IsNullOrEmpty(content))
         {
-            // Create new message
-            message = new QueueMessage(messageId, content);
-            message.UpdateVisibility(visibilityTimeout);
-            if (message.EnqueuedTime.HasValue && message.TimeToLive > 0)
-            {
-                message.ExpiryTime = message.EnqueuedTime.Value.AddSeconds(message.TimeToLive);
-            }
+            message.UpdateContent(content);
         }
+        message.UpdateVisibility(visibilityTimeout);
 
         // Persist message
         File.WriteAllText(messagePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
