@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Topaz.Service.Storage.Exceptions;
@@ -49,7 +50,18 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
         var data = root.ToJsonString();
 
-        File.WriteAllText(entityPath, data);
+        lock (EntityLock(entityPath))
+        {
+            // Re-check existence under the lock so a concurrent insert cannot slip between the check
+            // above and the write below.
+            if (File.Exists(entityPath))
+            {
+                logger.LogDebug(nameof(TableServiceDataPlane), nameof(InsertEntity), "Executing {0}: Duplicated entry.", nameof(InsertEntity));
+                throw new EntityAlreadyExistsException();
+            }
+
+            File.WriteAllText(entityPath, data);
+        }
 
         return rawContent;
     }
@@ -74,7 +86,16 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
             throw new EntityNotFoundException();
         }
 
-        return File.ReadAllText(entityPath);
+        lock (EntityLock(entityPath))
+        {
+            // Re-check under the lock: a concurrent delete may have removed it after the check above.
+            if (!File.Exists(entityPath))
+            {
+                throw new EntityNotFoundException();
+            }
+
+            return File.ReadAllText(entityPath);
+        }
     }
 
     internal TableQueryResult QueryEntities(QueryString query, SubscriptionIdentifier subscriptionIdentifier,
@@ -87,11 +108,19 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
 
         // Load all entities from disk as JsonObject so we can inspect individual properties.
-        var allEntities = Directory.EnumerateFiles(path)
+        var allEntities = Directory.EnumerateFiles(path, "*.json")
             .Select(file =>
             {
-                var content = File.ReadAllText(file);
-                return JsonSerializer.Deserialize<JsonObject>(content, GlobalSettings.JsonOptions);
+                // Lock the individual entity file so the read never overlaps a writer's rewrite, and
+                // tolerate a concurrent delete between enumeration and read (the file is simply gone).
+                string? content = null;
+                lock (EntityLock(file))
+                {
+                    if (File.Exists(file))
+                        content = File.ReadAllText(file);
+                }
+
+                return content is null ? null : JsonSerializer.Deserialize<JsonObject>(content, GlobalSettings.JsonOptions);
             })
             .Where(e => e is not null)
             .Select(e => e!)
@@ -203,14 +232,23 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
             throw new EntityNotFoundException();
         }
 
-        if (etag != "*")
+        lock (EntityLock(entityPath))
         {
-            var node = JsonNode.Parse(File.ReadAllText(entityPath));
-            if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
-                throw new UpdateConditionNotSatisfiedException();
-        }
+            if (!File.Exists(entityPath))
+            {
+                logger.LogDebug(nameof(TableServiceDataPlane), nameof(DeleteEntity), "Executing {0}: Entity not found.", nameof(DeleteEntity));
+                throw new EntityNotFoundException();
+            }
 
-        File.Delete(entityPath);
+            if (etag != "*")
+            {
+                var node = JsonNode.Parse(File.ReadAllText(entityPath));
+                if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
+                    throw new UpdateConditionNotSatisfiedException();
+            }
+
+            File.Delete(entityPath);
+        }
     }
 
     // Decide whether an If-Match precondition is satisfied for a stored entity. Two etag shapes occur:
@@ -276,7 +314,10 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         root["Timestamp"] = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
         root["odata.etag"] = new ETag(DateTimeOffset.Now.Ticks.ToString()).ToString("H");
 
-        File.WriteAllText(entityPath, root.ToJsonString());
+        lock (EntityLock(entityPath))
+        {
+            File.WriteAllText(entityPath, root.ToJsonString());
+        }
     }
 
     internal void UpdateEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
@@ -310,45 +351,66 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
             throw new EntityNotFoundException();
         }
 
-        var existingJson = File.ReadAllText(entityPath);
-
-        if(etag != "*")
+        // The whole read-modify-write runs under the per-entity lock so a reader never sees the file
+        // mid-rewrite (empty/partial JSON) and two conditional updates cannot both pass the etag check
+        // before either writes (the second now correctly 412s). Those races surfaced as intermittent
+        // 500s when a high-frequency writer (a fast job poll) overlapped a reader of the same entity.
+        lock (EntityLock(entityPath))
         {
-            var node = JsonNode.Parse(existingJson);
-            if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
-                throw new UpdateConditionNotSatisfiedException();
+            if (File.Exists(entityPath) == false)
+            {
+                logger.LogDebug(nameof(TableServiceDataPlane), nameof(UpdateEntity), "Executing {0}: Not existing entry.", nameof(UpdateEntity));
+                throw new EntityNotFoundException();
+            }
+
+            var existingJson = File.ReadAllText(entityPath);
+
+            if (etag != "*")
+            {
+                var node = JsonNode.Parse(existingJson);
+                if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
+                    throw new UpdateConditionNotSatisfiedException();
+            }
+
+            var root = JsonNode.Parse(rawContent)!.AsObject();
+
+            // Merge Entity (MERGE / PATCH / InsertOrMerge) overlays the request's properties
+            // onto the stored entity and PRESERVES stored properties the request omitted.
+            // A plain replace (the Update/Replace and InsertOrReplace path) drops every
+            // property absent from a partial merge body, silently nulling fields the caller
+            // never intended to clear.
+            if (merge && JsonNode.Parse(existingJson) is JsonObject existing)
+            {
+                foreach (var property in root)
+                    existing[property.Key] = property.Value?.DeepClone();
+                root = existing;
+            }
+
+            var newEtag = new ETag(DateTimeOffset.Now.Ticks.ToString());
+            var timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
+
+            // The entity keys are authoritative from the request URL; an update/merge body
+            // may omit them (they are not required in the payload). Persist them so the
+            // stored entity always carries PartitionKey/RowKey - otherwise a later query
+            // returns a keyless entity and SDK entity resolvers dereference a null RowKey.
+            root["PartitionKey"] = partitionKey;
+            root["RowKey"] = rowKey;
+            root["Timestamp"] = timestamp;
+            root["odata.etag"] = newEtag.ToString("H");
+
+            File.WriteAllText(entityPath, root.ToJsonString());
         }
-
-        File.Delete(entityPath);
-
-        var root = JsonNode.Parse(rawContent)!.AsObject();
-
-        // Merge Entity (MERGE / PATCH / InsertOrMerge) overlays the request's properties
-        // onto the stored entity and PRESERVES stored properties the request omitted.
-        // A plain replace (the Update/Replace and InsertOrReplace path) drops every
-        // property absent from a partial merge body, silently nulling fields the caller
-        // never intended to clear.
-        if (merge && JsonNode.Parse(existingJson) is JsonObject existing)
-        {
-            foreach (var property in root)
-                existing[property.Key] = property.Value?.DeepClone();
-            root = existing;
-        }
-
-        var newEtag = new ETag(DateTimeOffset.Now.Ticks.ToString());
-        var timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
-
-        // The entity keys are authoritative from the request URL; an update/merge body
-        // may omit them (they are not required in the payload). Persist them so the
-        // stored entity always carries PartitionKey/RowKey - otherwise a later query
-        // returns a keyless entity and SDK entity resolvers dereference a null RowKey.
-        root["PartitionKey"] = partitionKey;
-        root["RowKey"] = rowKey;
-        root["Timestamp"] = timestamp;
-        root["odata.etag"] = newEtag.ToString("H");
-
-        var data = root.ToJsonString();
-
-        File.WriteAllText(entityPath, data);
     }
+
+    // Per-entity-file lock. The data plane is file-backed and is instantiated per request, so a STATIC,
+    // entity-path-keyed lock is what actually serialises concurrent access to a given entity across all
+    // requests in this (single) process. Held across each read-modify-write (and across reads), it stops
+    // a reader from observing a file mid-rewrite or in a delete-then-write gap - the torn/missing reads
+    // that surfaced as intermittent 500s under a fast writer overlapping a reader of the same entity -
+    // and gives conditional updates real read-check-write atomicity. Lock objects are keyed by the
+    // normalised full path; the set is bounded by the number of distinct entities touched.
+    private static readonly ConcurrentDictionary<string, object> EntityLocks = new(StringComparer.Ordinal);
+
+    private static object EntityLock(string entityPath)
+        => EntityLocks.GetOrAdd(Path.GetFullPath(entityPath), static _ => new object());
 }
