@@ -13,6 +13,7 @@ using Topaz.CloudEnvironment;
 using Topaz.Dns;
 using Topaz.EventPipeline;
 using Topaz.Host.AMQP;
+using Topaz.Host.Diagnostics;
 using Topaz.Service.Authorization;
 using Topaz.Service.AppService;
 using Topaz.Service.ContainerRegistry;
@@ -89,6 +90,11 @@ public class Host
         Console.WriteLine();
 
         Bootstrap();
+
+        // Start request tracing if enabled (TOPAZ_OTEL_TRACES names a writable trace-file path). No-op/zero-
+        // cost otherwise. Disposed in the using scope (method exit on shutdown) so the listener + writer are
+        // released cleanly.
+        using var requestTracing = TopazDiagnostics.TryStart();
 
         GlobalDnsEntries.ConfigureLogger(_logger);
 
