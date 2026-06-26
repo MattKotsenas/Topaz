@@ -19,6 +19,15 @@ namespace Topaz.Host.Diagnostics;
 ///
 /// OFF by default: with <c>TOPAZ_OTEL_TRACES</c> unset, <see cref="TryRecordRequest"/> is a cheap no-op.
 /// </summary>
+// TODO(upstream/observability): move Topaz.Host off the legacy `Microsoft.AspNetCore` 2.3.9 NuGet
+// metapackage (the last standalone ASP.NET Core package; 3.0+ ships it as the `Microsoft.AspNetCore.App`
+// shared framework via <FrameworkReference>) onto the current ASP.NET Core that matches the net10 runtime.
+// That would (a) remove the Kestrel 2.3.0 CVE (NU1904) and (b) make almost all of THIS file unnecessary:
+// modern ASP.NET Core auto-emits a per-request Activity, so `AddOpenTelemetry().WithTracing(t => t
+// .AddAspNetCoreInstrumentation().AddSource("Topaz").AddOtlpExporter())` yields request spans for free and
+// the existing ActivitySource "Topaz" lights up unchanged - no Router instrumentation, no file drain, no
+// manual span JSON. The only reason for the bespoke approach is that subscribing any ActivityListener hangs
+// the 2.3 hosting layer (see above); modernizing removes that blocker. Scoped here as a tracked follow-up.
 internal static class TopazDiagnostics
 {
     /// <summary>
