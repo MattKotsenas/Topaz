@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
@@ -5,6 +6,7 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
 using Topaz.EventPipeline;
+using Topaz.Host.Diagnostics;
 using Topaz.Service.Authorization;
 using Topaz.Service.ResourceManager;
 using Topaz.Service.Shared;
@@ -40,6 +42,11 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
             return;
         }
+
+        // Request-tracing start marker (OpenTelemetry-shaped span emitted at the end via
+        // TopazDiagnostics.TryRecordRequest). Cheap to capture; only emitted when tracing is enabled.
+        var traceStartUtc = DateTime.UtcNow;
+        var traceStart = Stopwatch.GetTimestamp();
 
         logger.LogInformation($"[{method}][{context.Request.Host}{path}{query}][port:{port}]");
 
@@ -139,6 +146,8 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
 
         if (endpoint == null)
         {
+            TopazDiagnostics.TryRecordRequest(traceStartUtc, Stopwatch.GetElapsedTime(traceStart).TotalMilliseconds,
+                method, path, query.Value, port, endpointName: null, providerNamespace: null, statusCode: 404, exception: null);
             await CreateNotFoundResponse(context, method, path);
             return;
         }
@@ -146,10 +155,14 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint), "The selected handler for an endpoint will be {0}", endpoint.GetType().Name);
         logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint), "[{0}] {1}{2}", method, path, query);
 
-        var response = CallEndpoint(endpoint, context);
+        var (response, requestError) = CallEndpoint(endpoint, context);
         // Ensure Content is never null — a missing body returns empty string so downstream
         // code can always call ReadAsByteArrayAsync() without a NullReferenceException.
         response.Content ??= new StringContent(string.Empty);
+
+        TopazDiagnostics.TryRecordRequest(traceStartUtc, Stopwatch.GetElapsedTime(traceStart).TotalMilliseconds,
+            method, path, query.Value, port, endpoint.GetType().Name, endpoint.ProviderNamespace,
+            (int)response.StatusCode, requestError);
         var responseBytes = await response.Content.ReadAsByteArrayAsync();
         var textResponse = System.Text.Encoding.UTF8.GetString(responseBytes);
 
@@ -204,7 +217,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         }
     }
 
-    private HttpResponseMessage CallEndpoint(IEndpointDefinition endpoint, HttpContext context)
+    private (HttpResponseMessage Response, Exception? Error) CallEndpoint(IEndpointDefinition endpoint, HttpContext context)
     {
         var response = new HttpResponseMessage();
         string? requestBodyContent = null;
@@ -230,7 +243,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             {
                 response.StatusCode = HttpStatusCode.Unauthorized;
                 response.Content = new StringContent(string.Empty);
-                return response;
+                return (response, null);
             }
 
             // Provider registration gate — mirrors Azure's MissingSubscriptionRegistration behaviour.
@@ -251,7 +264,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
                             GlobalSettings.JsonOptions);
                         response.Content = new StringContent(errorJson, System.Text.Encoding.UTF8, "application/json");
                         response.StatusCode = HttpStatusCode.Conflict;
-                        return response;
+                        return (response, null);
                     }
                 }
             }
@@ -269,6 +282,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             
             response.Content = new StringContent(ex.Message);
             response.StatusCode = HttpStatusCode.InternalServerError;
+            return (response, ex);
         }
         catch(Exception ex)
         {
@@ -276,9 +290,10 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             
             response.Content = new StringContent(ex.Message);
             response.StatusCode = HttpStatusCode.InternalServerError;
+            return (response, ex);
         }
         
-        return response;
+        return (response, null);
     }
 
     /// <summary>
