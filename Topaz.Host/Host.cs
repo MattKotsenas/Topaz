@@ -357,6 +357,15 @@ public class Host
         var host = new WebHostBuilder()
             .UseKestrel((_, hostOptions) =>
             {
+                // Topaz is a local emulator reached through a TLS-terminating loopback proxy that can relay a
+                // request body in bursts. Kestrel's default MinRequestBodyDataRate (a slow-loris DoS guard meant
+                // for hostile public clients) then aborts a legitimately-slow body mid-write with a 500
+                // "Reading the request body timed out due to data arriving too slowly", which fails the caller's
+                // storage write and forces it to retry. That guard has no value for an emulator, so disable it
+                // (and the matching response-rate guard) to keep proxied writes reliable under load.
+                hostOptions.Limits.MinRequestBodyDataRate = null;
+                hostOptions.Limits.MinResponseDataRate = null;
+
                 var usedPorts = new List<int>();
                 foreach (var httpEndpoint in httpEndpoints)
                 {
