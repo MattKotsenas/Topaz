@@ -53,29 +53,44 @@ internal sealed class CreateTableEndpoint(Pipeline eventPipeline, ITopazLogger l
             storageAccount.Name, request.TableName);
         if (tableExists)
         {
-            var error = new TableErrorResponse("TableAlreadyExists", "Table already exists.");
-
-            response.StatusCode = HttpStatusCode.Conflict;
-            response.Headers.Add("x-ms-error-code", "TableAlreadyExists");
-            response.Content = JsonContent.Create(error);
-
+            WriteTableAlreadyExists(response);
             return;
         }
 
-        var tableOp = ControlPlane.CreateTable(subscriptionIdentifier, resourceGroupIdentifier,
-            storageAccount.Name, request);
-
-        if (!context.Request.Headers.TryGetValue("Prefer", out var prefer) || prefer != "return-no-content")
+        try
         {
-            response.Content = JsonContent.Create(tableOp.Resource);
-            response.StatusCode = HttpStatusCode.Created;
-            response.Headers.Add("Preference-Applied", "return-content");
-        }
+            var tableOp = ControlPlane.CreateTable(subscriptionIdentifier, resourceGroupIdentifier,
+                storageAccount.Name, request);
 
-        if (prefer == "return-no-content")
-        {
-            response.StatusCode = HttpStatusCode.NoContent;
-            response.Headers.Add("Preference-Applied", "return-no-content");
+            if (!context.Request.Headers.TryGetValue("Prefer", out var prefer) || prefer != "return-no-content")
+            {
+                response.Content = JsonContent.Create(tableOp.Resource);
+                response.StatusCode = HttpStatusCode.Created;
+                response.Headers.Add("Preference-Applied", "return-content");
+            }
+
+            if (prefer == "return-no-content")
+            {
+                response.StatusCode = HttpStatusCode.NoContent;
+                response.Headers.Add("Preference-Applied", "return-no-content");
+            }
         }
+        catch (InvalidOperationException)
+        {
+            // A concurrent CreateTable for the same table won the race between the existence check above and
+            // this create (the file-backed store throws when the metadata file already exists). Azure treats a
+            // duplicate create as 409 TableAlreadyExists, which the storage SDK's CreateIfNotExists tolerates,
+            // so surface the same conflict instead of a 500 that would force the caller to retry.
+            WriteTableAlreadyExists(response);
+        }
+    }
+
+    private static void WriteTableAlreadyExists(HttpResponseMessage response)
+    {
+        var error = new TableErrorResponse("TableAlreadyExists", "Table already exists.");
+
+        response.StatusCode = HttpStatusCode.Conflict;
+        response.Headers.Add("x-ms-error-code", "TableAlreadyExists");
+        response.Content = JsonContent.Create(error);
     }
 }
