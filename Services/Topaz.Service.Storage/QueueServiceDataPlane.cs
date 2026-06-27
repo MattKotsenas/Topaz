@@ -9,6 +9,16 @@ namespace Topaz.Service.Storage;
 
 internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlane, QueueResourceProvider resourceProvider, ITopazLogger logger)
 {
+    /// <summary>
+    /// Test seam: invoked when a <see cref="GetMessages"/> caller has CLAIMED a message - i.e. passed the
+    /// visibility check and is about to take it - before the visibility writeback. Null (and zero-cost) in
+    /// production. It lets a concurrency test deterministically observe how many callers claim the SAME message,
+    /// which is the platform-independent signal for the dequeue-atomicity invariant: OS file locking masks the
+    /// write-back race on Windows (a losing writer throws and is swallowed) but not on Linux (the container,
+    /// where the duplicate dequeue actually happens), so asserting on returned counts alone is unreliable.
+    /// </summary>
+    internal static Action? OnDequeueClaim;
+
     public static QueueServiceDataPlane New(ITopazLogger logger)
     {
         var resourceProvider = new QueueResourceProvider(logger);
@@ -343,50 +353,61 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
         }
 
         var messages = new List<QueueMessage>();
-        var messageFiles = Directory.GetFiles(messageDir, "*.json").OrderBy(f => f).ToArray();
 
-        foreach (var filePath in messageFiles)
+        // Serialize the dequeue scan per queue. The store is file-backed and a dequeue is a read-check-modify-
+        // write (read file -> IsVisible? -> bump DequeueCount + set NextVisibleTime -> write). Without this lock,
+        // concurrent callers each read a message as still-visible before any of them writes the hidden
+        // NextVisibleTime back, so they ALL claim and return it - the at-least-once queue hands one job trigger
+        // to every concurrent worker at once (the 500x setup burst behind the never-dispatches stall).
+        // Holding a per-queue lock across the scan makes the visibility update atomic: the first claimer hides
+        // the message (for visibilityTimeout) and the rest observe it hidden and skip - at most one dequeuer per
+        // visibility window, matching Azure Storage Queue semantics. Mirrors TableServiceDataPlane's per-entity
+        // lock; see QueueConcurrencyTests for the deterministic red->green proof.
+        lock (QueueLock(messageDir))
         {
-            if (messages.Count >= numMessages)
-                break;
+            var messageFiles = Directory.GetFiles(messageDir, "*.json").OrderBy(f => f).ToArray();
 
-            try
+            foreach (var filePath in messageFiles)
             {
-                var messageContent = File.ReadAllText(filePath);
-                var message = JsonSerializer.Deserialize<QueueMessage>(messageContent, GlobalSettings.JsonOptions);
+                if (messages.Count >= numMessages)
+                    break;
 
-                if (message == null)
-                    continue;
-
-                // Skip if expired
-                if (message.IsExpired())
+                try
                 {
-                    File.Delete(filePath);
-                    continue;
+                    var messageContent = File.ReadAllText(filePath);
+                    var message = JsonSerializer.Deserialize<QueueMessage>(messageContent, GlobalSettings.JsonOptions);
+
+                    if (message == null)
+                        continue;
+
+                    // Skip if expired
+                    if (message.IsExpired())
+                    {
+                        File.Delete(filePath);
+                        continue;
+                    }
+
+                    // Skip if not visible yet
+                    if (!message.IsVisible())
+                        continue;
+
+                    // This caller has claimed a visible, unexpired message (test seam; no-op in production).
+                    OnDequeueClaim?.Invoke();
+
+                    // Message is visible and not expired - prepare for return
+                    message.DequeueCount++;
+                    message.UpdateVisibility(visibilityTimeout);
+
+                    // Persist the updated message (visibility writeback) under the per-queue lock.
+                    File.WriteAllText(filePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
+
+                    messages.Add(message);
                 }
-
-                // Skip if not visible yet
-                if (!message.IsVisible())
-                    continue;
-
-                // Message is visible and not expired - prepare for return
-                message.DequeueCount++;
-                message.UpdateVisibility(visibilityTimeout);
-
-                // Persist the updated message (dequeue-count + visibility writeback).
-                // TOCTOU / upstream note: same lock-free read-modify-write window as PutMessage (see the note
-                // there). A concurrent DeleteMessage between ReadAllText above and this WriteAllText can
-                // re-create a just-deleted message; it keeps its content (parseable -> at worst a spurious
-                // re-dequeue), so it is not the fatal empty-content path. Per-message serialization would
-                // close it.
-                File.WriteAllText(filePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
-
-                messages.Add(message);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(nameof(QueueServiceDataPlane), nameof(GetMessages),
-                    "Error processing message file {0}: {1}", filePath, ex.Message);
+                catch (Exception ex)
+                {
+                    logger.LogError(nameof(QueueServiceDataPlane), nameof(GetMessages),
+                        "Error processing message file {0}: {1}", filePath, ex.Message);
+                }
             }
         }
 
@@ -521,6 +542,16 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
 
         return new DataPlaneOperationResult<QueueMessage>(OperationResult.Success, message, null, null);
     }
+
+    // Per-queue lock. The data plane is file-backed and instantiated per request, so a STATIC, queue-path-keyed
+    // lock serialises concurrent dequeues of a given queue across all requests in this (single) process. Held
+    // across the GetMessages read-check-modify-write scan, it makes the visibility update atomic so the
+    // at-least-once queue hands a given message to exactly one worker instead of every concurrent poller.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> QueueLocks =
+        new(StringComparer.Ordinal);
+
+    private static object QueueLock(string messageDir)
+        => QueueLocks.GetOrAdd(Path.GetFullPath(messageDir), static _ => new object());
 }
 
 public sealed class QueueEnumerationResult
