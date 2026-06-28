@@ -558,44 +558,11 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
     private static object QueueLock(string messageDir)
         => QueueLocks.GetOrAdd(Path.GetFullPath(messageDir), static _ => new object());
 
-    // Atomically (re)write a message file: write a temp file in the same directory, then rename it over the
-    // target. Rename is atomic on one volume (NTFS MoveFileEx / POSIX rename), so a concurrent reader or writer
-    // always observes a COMPLETE file - the old content or the new, never a torn one. Plain File.WriteAllText
-    // truncates-then-writes and is neither atomic nor mutually exclusive: two writers racing on the same message
-    // file (a dequeue visibility-writeback and a watchdog visibility-update) interleave into invalid JSON, which
-    // then fails to deserialize on every later dequeue and strands the message forever. The temp name is not
-    // "*.json", so an in-flight temp is never picked up by the message scan in GetMessages/PeekMessages/Clear.
+    // Atomically (re)write a message file so a concurrent reader/writer never observes a torn message - the
+    // foundation fix for the dequeue-writeback vs watchdog-visibility-update race that corrupted job triggers.
+    // Shared with the table store via AtomicFile (the temp name is not "*.json", so the message scan skips it).
     private static void WriteMessageFileAtomic(string messagePath, string json)
-    {
-        var dir = Path.GetDirectoryName(messagePath)!;
-        var tempPath = Path.Combine(dir, Guid.NewGuid().ToString("N") + ".tmp");
-        File.WriteAllText(tempPath, json);
-        try
-        {
-            // Retry the atomic replace on transient sharing errors. In-process writers are already serialized by
-            // the per-queue lock, so the only contention here is an EXTERNAL transient handle - on Windows the
-            // AV/indexer routinely scans the just-written temp file and briefly fails MoveFileEx(REPLACE_EXISTING)
-            // with ACCESS_DENIED / sharing violation. On Linux (the container) the first attempt succeeds.
-            const int maxAttempts = 10;
-            for (var attempt = 1; ; attempt++)
-            {
-                try
-                {
-                    File.Move(tempPath, messagePath, overwrite: true);
-                    return;
-                }
-                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < maxAttempts)
-                {
-                    Thread.Sleep(attempt * 5);
-                }
-            }
-        }
-        catch
-        {
-            try { File.Delete(tempPath); } catch { /* best-effort temp cleanup */ }
-            throw;
-        }
-    }
+        => AtomicFile.WriteAllText(messagePath, json);
 }
 
 public sealed class QueueEnumerationResult

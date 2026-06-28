@@ -60,7 +60,7 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
                 throw new EntityAlreadyExistsException();
             }
 
-            File.WriteAllText(entityPath, data);
+            AtomicFile.WriteAllText(entityPath, data);
         }
 
         return rawContent;
@@ -316,7 +316,7 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
         lock (EntityLock(entityPath))
         {
-            File.WriteAllText(entityPath, root.ToJsonString());
+            AtomicFile.WriteAllText(entityPath, root.ToJsonString());
         }
     }
 
@@ -398,7 +398,7 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
             root["Timestamp"] = timestamp;
             root["odata.etag"] = newEtag.ToString("H");
 
-            File.WriteAllText(entityPath, root.ToJsonString());
+            AtomicFile.WriteAllText(entityPath, root.ToJsonString());
         }
     }
 
