@@ -185,49 +185,44 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
         var messagePath = resourceProvider.GetMessageFilePath(subscriptionIdentifier, resourceGroupIdentifier,
             storageAccountName, queueName, messageId);
 
-        QueueMessage message;
-
-        // TOCTOU / upstream note: this file-backed queue is lock-free, so the File.Exists check below and
-        // the File.WriteAllText at the end of this method are NOT atomic. A DeleteMessage landing between the
-        // check (or the subsequent ReadAllText) and the write can still RESURRECT a just-deleted message -
-        // but with its prior content intact, which is parseable and only causes a spurious re-dequeue
-        // (consumers are expected to be idempotent), NOT the fatal empty-content crash the check below fixes.
-        // Closing this window fully needs per-message serialization (e.g. a per-queue lock or open-with-
-        // FileMode.Open exclusive access mapping a missing file to MessageNotFound). Deliberately left out to
-        // keep the change surgical; revisit if exact Azure update/delete atomicity is required.
-        if (!File.Exists(messagePath))
+        // Read-modify-write under the per-queue lock + atomic temp-file rename, serialized with the
+        // GetMessages dequeue visibility-writeback and with DeleteMessage. Plain File.WriteAllText is
+        // truncate-then-write: neither atomic nor mutually exclusive, so a watchdog visibility-update racing a
+        // concurrent dequeue-writeback on the SAME message file interleaves into invalid JSON. That corrupted
+        // file then fails to deserialize on every later dequeue and strands the message (and its job) forever -
+        // the foundation bug behind the "queued trigger created but never executes" processing stall. The
+        // lock plus the rename close the window and match Azure update/delete atomicity.
+        lock (QueueLock(messageDir))
         {
-            // Azure Queue Storage's Update Message returns 404 MessageNotFound when the target message no
-            // longer exists (it was already dequeued-and-deleted by another consumer). Creating a message
-            // here instead is wrong on two counts: it resurrects a message the client already finished with,
-            // and a visibility-only update carries no body, so the resurrected message has EMPTY content.
-            // That empty message is then handed back on every subsequent dequeue and breaks any consumer that
-            // parses the message body. Under fast polling a consumer's delete and a late in-flight visibility
-            // update race routinely, so this path is hit in practice. Match Azure: report not-found.
-            logger.LogDebug(nameof(QueueServiceDataPlane), nameof(PutMessage),
-                "Update for non-existent message {0} in queue {1}; returning MessageNotFound.", messageId, queueName);
-            return new DataPlaneOperationResult<QueueMessage>(OperationResult.NotFound, null,
-                "Message not found.", "MessageNotFound");
+            if (!File.Exists(messagePath))
+            {
+                // Azure Queue Storage's Update Message returns 404 MessageNotFound when the target message no
+                // longer exists (it was already dequeued-and-deleted by another consumer). Resurrecting it here
+                // would hand back an EMPTY-content message on every subsequent dequeue and break any consumer
+                // that parses the message body. Match Azure: report not-found.
+                logger.LogDebug(nameof(QueueServiceDataPlane), nameof(PutMessage),
+                    "Update for non-existent message {0} in queue {1}; returning MessageNotFound.", messageId, queueName);
+                return new DataPlaneOperationResult<QueueMessage>(OperationResult.NotFound, null,
+                    "Message not found.", "MessageNotFound");
+            }
+
+            var existingContent = File.ReadAllText(messagePath);
+            var message = JsonSerializer.Deserialize<QueueMessage>(existingContent, GlobalSettings.JsonOptions)
+                ?? throw new InvalidOperationException("Failed to deserialize message");
+
+            // A visibility-only update sends no request body, so the content arrives empty; it must
+            // preserve the existing message content. Only overwrite the content when new content was
+            // actually provided (Azure's update-message only changes content when the request carries one).
+            if (!string.IsNullOrEmpty(content))
+            {
+                message.UpdateContent(content);
+            }
+            message.UpdateVisibility(visibilityTimeout);
+
+            WriteMessageFileAtomic(messagePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
+
+            return new DataPlaneOperationResult<QueueMessage>(OperationResult.Success, message, null, null);
         }
-
-        var existingContent = File.ReadAllText(messagePath);
-        message = JsonSerializer.Deserialize<QueueMessage>(existingContent, GlobalSettings.JsonOptions)
-            ?? throw new InvalidOperationException("Failed to deserialize message");
-
-        // Update existing message
-        // A visibility-only update sends no request body, so the content arrives empty; it must
-        // preserve the existing message content. Only overwrite the content when new content was
-        // actually provided (Azure's update-message only changes content when the request carries one).
-        if (!string.IsNullOrEmpty(content))
-        {
-            message.UpdateContent(content);
-        }
-        message.UpdateVisibility(visibilityTimeout);
-
-        // Persist message
-        File.WriteAllText(messagePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
-
-        return new DataPlaneOperationResult<QueueMessage>(OperationResult.Success, message, null, null);
     }
 
     public DataPlaneOperationResult<QueueMessage> GetMessage(SubscriptionIdentifier subscriptionIdentifier,
@@ -306,16 +301,24 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
                 "Queue not found.", "QueueNotFound");
         }
 
+        var messageDir = resourceProvider.GetMessagesDirectoryPath(subscriptionIdentifier, resourceGroupIdentifier,
+            storageAccountName, queueName);
         var messagePath = resourceProvider.GetMessageFilePath(subscriptionIdentifier, resourceGroupIdentifier,
             storageAccountName, queueName, messageId);
 
-        if (!File.Exists(messagePath))
+        // Serialized with the dequeue visibility-writeback (GetMessages) and PutMessage on this queue, so a
+        // delete cannot interleave with a visibility update and resurrect or corrupt the message file.
+        lock (QueueLock(messageDir))
         {
-            return new DataPlaneOperationResult(OperationResult.NotFound,
-                "Message not found.", "MessageNotFound");
+            if (!File.Exists(messagePath))
+            {
+                return new DataPlaneOperationResult(OperationResult.NotFound,
+                    "Message not found.", "MessageNotFound");
+            }
+
+            File.Delete(messagePath);
         }
 
-        File.Delete(messagePath);
         return new DataPlaneOperationResult(OperationResult.Success, null, null);
     }
 
@@ -398,8 +401,9 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
                     message.DequeueCount++;
                     message.UpdateVisibility(visibilityTimeout);
 
-                    // Persist the updated message (visibility writeback) under the per-queue lock.
-                    File.WriteAllText(filePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
+                    // Persist the updated message (visibility writeback) under the per-queue lock,
+                    // atomically (temp file + rename) so a concurrent reader/writer never sees a torn file.
+                    WriteMessageFileAtomic(filePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
 
                     messages.Add(message);
                 }
@@ -534,8 +538,9 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
             message.ExpiryTime = message.EnqueuedTime.Value.AddSeconds(messageTtl);
         }
 
-        // Persist message
-        File.WriteAllText(messagePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
+        // Persist message atomically (temp file + rename) so a concurrent dequeue scan never reads a
+        // half-written file.
+        WriteMessageFileAtomic(messagePath, JsonSerializer.Serialize(message, GlobalSettings.JsonOptions));
 
         logger.LogDebug(nameof(QueueServiceDataPlane), nameof(SendMessage),
             "Message {0} enqueued to queue {1}", messageId, queueName);
@@ -552,6 +557,45 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
 
     private static object QueueLock(string messageDir)
         => QueueLocks.GetOrAdd(Path.GetFullPath(messageDir), static _ => new object());
+
+    // Atomically (re)write a message file: write a temp file in the same directory, then rename it over the
+    // target. Rename is atomic on one volume (NTFS MoveFileEx / POSIX rename), so a concurrent reader or writer
+    // always observes a COMPLETE file - the old content or the new, never a torn one. Plain File.WriteAllText
+    // truncates-then-writes and is neither atomic nor mutually exclusive: two writers racing on the same message
+    // file (a dequeue visibility-writeback and a watchdog visibility-update) interleave into invalid JSON, which
+    // then fails to deserialize on every later dequeue and strands the message forever. The temp name is not
+    // "*.json", so an in-flight temp is never picked up by the message scan in GetMessages/PeekMessages/Clear.
+    private static void WriteMessageFileAtomic(string messagePath, string json)
+    {
+        var dir = Path.GetDirectoryName(messagePath)!;
+        var tempPath = Path.Combine(dir, Guid.NewGuid().ToString("N") + ".tmp");
+        File.WriteAllText(tempPath, json);
+        try
+        {
+            // Retry the atomic replace on transient sharing errors. In-process writers are already serialized by
+            // the per-queue lock, so the only contention here is an EXTERNAL transient handle - on Windows the
+            // AV/indexer routinely scans the just-written temp file and briefly fails MoveFileEx(REPLACE_EXISTING)
+            // with ACCESS_DENIED / sharing violation. On Linux (the container) the first attempt succeeds.
+            const int maxAttempts = 10;
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tempPath, messagePath, overwrite: true);
+                    return;
+                }
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < maxAttempts)
+                {
+                    Thread.Sleep(attempt * 5);
+                }
+            }
+        }
+        catch
+        {
+            try { File.Delete(tempPath); } catch { /* best-effort temp cleanup */ }
+            throw;
+        }
+    }
 }
 
 public sealed class QueueEnumerationResult
