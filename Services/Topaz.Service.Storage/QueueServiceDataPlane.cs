@@ -340,6 +340,18 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
             "Executing {0}: {1} {2} numMessages={3} visibilityTimeout={4}", 
             nameof(GetMessages), storageAccountName, queueName, numMessages, visibilityTimeout);
 
+        // Azure Storage Queue's Get Messages requires a visibility timeout of 1s..7d (default 30s) - it rejects 0.
+        // Enforce that floor here (defence-in-depth with the endpoint) so an invalid lease=0 dequeue fails fast,
+        // matching real Azure, instead of being silently accepted (which is what let the consuming emulator run on an
+        // invalid, dup-producing config). Put/Update Message still allow 0, so this guard is on Get Messages only.
+        if (!QueueMessageValidator.ValidateGetMessagesVisibilityTimeout(visibilityTimeout, out var visibilityError))
+        {
+            logger.LogDebug(nameof(QueueServiceDataPlane), nameof(GetMessages),
+                "Get Messages visibility timeout validation failed: {0}", visibilityError);
+            return new DataPlaneOperationResult<List<QueueMessage>>(OperationResult.Failed, null,
+                visibilityError, "OutOfRangeQueryParameterValue");
+        }
+
         if (!controlPlane.QueueExists(subscriptionIdentifier, resourceGroupIdentifier, storageAccountName, queueName))
         {
             return new DataPlaneOperationResult<List<QueueMessage>>(OperationResult.NotFound, null,

@@ -92,14 +92,23 @@ internal sealed class GetMessagesEndpoint(Pipeline eventPipeline, ITopazLogger l
                     return;
                 }
 
-                // Validate visibility timeout range
-                if (!QueueMessageValidator.ValidateVisibilityTimeout(visibilityTimeout, out var timeoutError))
+                // Validate visibility timeout range. Azure's Get Messages requires 1s..7d (it rejects 0); enforce
+                // that so an invalid lease=0 dequeue fails fast with the same 400 OutOfRangeQueryParameterValue
+                // real Azure returns, rather than being silently accepted (which let the emulator run on an invalid,
+                // dup-producing config).
+                if (!QueueMessageValidator.ValidateGetMessagesVisibilityTimeout(visibilityTimeout, out var timeoutError))
                 {
                     Logger.LogDebug(nameof(GetMessagesEndpoint), nameof(GetResponse),
                         "Invalid visibility timeout: {0}", timeoutError);
                     response.StatusCode = HttpStatusCode.BadRequest;
-                    response.Content = new ByteArrayContent([]);
-                    response.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/xml");
+                    var errorXml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+                        "<Error><Code>OutOfRangeQueryParameterValue</Code>" +
+                        "<Message>One of the query parameters specified in the request URI is outside the permissible range.</Message>" +
+                        "<QueryParameterName>visibilitytimeout</QueryParameterName>" +
+                        $"<QueryParameterValue>{visibilityTimeout}</QueryParameterValue>" +
+                        $"<MinimumAllowed>{QueueMessageValidator.GetMessagesMinimumVisibilityTimeout}</MinimumAllowed>" +
+                        $"<MaximumAllowed>{QueueMessageValidator.GetMessagesMaximumVisibilityTimeout}</MaximumAllowed></Error>";
+                    response.Content = new StringContent(errorXml, Encoding.UTF8, "application/xml");
                     return;
                 }
             }

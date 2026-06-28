@@ -150,9 +150,10 @@ public class QueueConcurrencyTests
                     // Visibility-only update (no body): the in-flight-trigger watchdog re-extend.
                     dataPlane.PutMessage(subscription, resourceGroup, account, queue, messageId,
                         content: "", visibilityTimeout: 1);
-                    // Re-dequeue with a zero lease so the message stays immediately visible and keeps cycling.
+                    // Re-dequeue with the minimum valid 1s lease so the message keeps cycling visible/hidden while
+                    // the visibility-update above writes the same file (the dequeue-writeback vs update race).
                     dataPlane.GetMessages(subscription, resourceGroup, account, queue,
-                        numMessages: 1, visibilityTimeout: 0);
+                        numMessages: 1, visibilityTimeout: 1);
                 }
                 catch (Exception ex)
                 {
@@ -213,14 +214,14 @@ public class QueueConcurrencyTests
         var errors = new System.Collections.Concurrent.ConcurrentBag<Exception>();
         using var stop = new ManualResetEventSlim(false);
 
-        // Consumers create read/write pressure on the directory while producers add files. They dequeue with a
-        // zero lease (message stays immediately visible) and never delete, so nothing is consumed away - the
-        // count check below is purely about enqueue durability under a concurrent scan.
+        // Consumers create read/write pressure on the directory while producers add files. They dequeue with the
+        // minimum valid 1s lease and never delete, so messages briefly hide then reappear and nothing is consumed
+        // away - the count check below is purely about enqueue durability under a concurrent scan.
         var consumers = Enumerable.Range(0, 3).Select(_ => Task.Run(() =>
         {
             while (!stop.IsSet)
             {
-                try { dataPlane.GetMessages(subscription, resourceGroup, account, queue, numMessages: 32, visibilityTimeout: 0); }
+                try { dataPlane.GetMessages(subscription, resourceGroup, account, queue, numMessages: 32, visibilityTimeout: 1); }
                 catch (Exception ex) { errors.Add(ex); }
             }
         })).ToArray();
@@ -249,13 +250,20 @@ public class QueueConcurrencyTests
             "no enqueue/dequeue may throw under concurrency; first error: " + (errors.FirstOrDefault()?.ToString() ?? "<none>"));
         Assert.That(sentIds.Count, Is.EqualTo(totalSent), "precondition: every SendMessage reported success");
 
-        // Drain everything (all immediately visible) and confirm not one enqueued message was lost or corrupted.
+        // Drain by consuming (dequeue with the minimum valid 1s lease + delete) and confirm not one enqueued
+        // message was lost or corrupted. A message a consumer just hid reappears within 1s, so loop on a budget.
         var distinct = new HashSet<string>(StringComparer.Ordinal);
-        for (var attempt = 0; attempt < 20 && distinct.Count < totalSent; attempt++)
+        var drainDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (distinct.Count < totalSent && DateTime.UtcNow < drainDeadline)
         {
-            var got = dataPlane.GetMessages(subscription, resourceGroup, account, queue, numMessages: totalSent, visibilityTimeout: 0);
+            var got = dataPlane.GetMessages(subscription, resourceGroup, account, queue, numMessages: 32, visibilityTimeout: 1);
             Assert.That(got.Result, Is.EqualTo(OperationResult.Success), "drain dequeue succeeds");
-            foreach (var m in got.Resource!) { distinct.Add(m.Id!); }
+            if (got.Resource!.Count == 0) { Thread.Sleep(20); continue; }
+            foreach (var m in got.Resource!)
+            {
+                distinct.Add(m.Id!);
+                dataPlane.DeleteMessage(subscription, resourceGroup, account, queue, m.Id!);
+            }
         }
 
         Assert.That(distinct.Count, Is.EqualTo(totalSent),
@@ -309,8 +317,9 @@ public class QueueConcurrencyTests
             });
             Task.WaitAll([del, upd], TimeSpan.FromSeconds(10));
 
-            // The deleted message must NOT be resurrected by the racing update.
-            var peek = dataPlane.GetMessages(subscription, resourceGroup, account, queue, numMessages: 5, visibilityTimeout: 0);
+            // The deleted message must NOT be resurrected by the racing update. (1s is the minimum valid lease;
+            // a resurrected message is enqueued immediately-visible by the update, so this dequeue sees it.)
+            var peek = dataPlane.GetMessages(subscription, resourceGroup, account, queue, numMessages: 5, visibilityTimeout: 1);
             if (peek.Result == OperationResult.Success && peek.Resource!.Count > 0)
             {
                 resurrected++;

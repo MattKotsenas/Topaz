@@ -11,6 +11,12 @@ internal static class QueueMessageValidator
     private const int MinVisibilityTimeout = 0;
     private const int MaxVisibilityTimeout = 604800; // 7 days
 
+    // Get Messages (dequeue) requires a STRICTLY positive visibility timeout: Azure Storage Queue's
+    // Get Messages permits 1 second to 7 days (default 30s), unlike Put/Update Message which allow 0.
+    // Enforcing this floor makes Topaz reject the invalid lease=0 dequeue that real Azure rejects, instead
+    // of silently accepting it (which let the consuming emulator run on an invalid, dup-producing config).
+    private const int MinGetMessagesVisibilityTimeout = 1;
+
     /// <summary>
     /// Validate message content size. Azure Queue Storage has a 64 KB limit for messages.
     /// Messages are base64-encoded, which adds ~33% overhead.
@@ -52,6 +58,30 @@ internal static class QueueMessageValidator
                        $"Current value: {visibilityTimeout} seconds.";
         return false;
     }
+
+    /// <summary>
+    /// Validate the visibility timeout for a Get Messages (dequeue) request. Azure Storage Queue's Get Messages
+    /// requires the value to be 1 second to 7 days (default 30s) - it does NOT permit 0, unlike Put/Update Message.
+    /// A request outside this range is rejected with 400 OutOfRangeQueryParameterValue.
+    /// </summary>
+    /// <param name="visibilityTimeout">Timeout in seconds.</param>
+    /// <param name="errorMessage">Error description if validation fails.</param>
+    /// <returns>True if valid, false otherwise.</returns>
+    public static bool ValidateGetMessagesVisibilityTimeout(int visibilityTimeout, out string? errorMessage)
+    {
+        errorMessage = null;
+
+        if (visibilityTimeout >= MinGetMessagesVisibilityTimeout && visibilityTimeout <= MaxVisibilityTimeout) return true;
+        errorMessage = $"Visibility timeout for Get Messages must be between {MinGetMessagesVisibilityTimeout} and " +
+                       $"{MaxVisibilityTimeout} seconds. Current value: {visibilityTimeout} seconds.";
+        return false;
+    }
+
+    /// <summary>The minimum visibility timeout (seconds) Get Messages permits, for building Azure error responses.</summary>
+    public static int GetMessagesMinimumVisibilityTimeout => MinGetMessagesVisibilityTimeout;
+
+    /// <summary>The maximum visibility timeout (seconds) Get Messages permits, for building Azure error responses.</summary>
+    public static int GetMessagesMaximumVisibilityTimeout => MaxVisibilityTimeout;
 
     /// <summary>
     /// Get the HTTP status code for message size violation.
