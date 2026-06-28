@@ -306,7 +306,8 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         return operations;
     }
 
-    private static (string tableName, string? pk, string? rk) ParsePath(string url)
+    // internal (not private) so the regression test can pin the URL-decode of entity keys directly.
+    internal static (string tableName, string? pk, string? rk) ParsePath(string url)
     {
         // url may be absolute (https://acct.table.host/Table(...)) or a path. Reduce
         // to the path after the host/root.
@@ -330,7 +331,16 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         if (keyMatch.Success)
         {
             var tableName = path.Substring(0, keyMatch.Index);
-            return (tableName, keyMatch.Groups["pk"].Value, keyMatch.Groups["rk"].Value);
+            // Keys arrive URL-encoded in the batch sub-operation URL (e.g. ':' as %3A), exactly as in
+            // the non-batch entity path. Decode them so a batched MERGE/PUT/DELETE targets the same
+            // physical entity an insert stored from the (already-decoded) request body. Without this the
+            // encoded and decoded key forms diverge into two rows for one logical entity, which a later
+            // partition query then returns twice - breaking SDK consumers that key query results by a
+            // single entity property (e.g. building a dictionary keyed by a property hits a duplicate
+            // key). Mirrors TableDataPlaneEndpointBase.GetOperationDataForUpdateOperation.
+            var pk = Uri.UnescapeDataString(keyMatch.Groups["pk"].Value);
+            var rk = Uri.UnescapeDataString(keyMatch.Groups["rk"].Value);
+            return (tableName, pk, rk);
         }
 
         // A keyless insert (POST) targets "Table()" (empty parens) - strip them to
