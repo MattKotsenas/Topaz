@@ -47,6 +47,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         // TopazDiagnostics.TryRecordRequest). Cheap to capture; only emitted when tracing is enabled.
         var traceStartUtc = DateTime.UtcNow;
         var traceStart = Stopwatch.GetTimestamp();
+        var traceParent = context.Request.Headers["traceparent"].FirstOrDefault();
 
         logger.LogInformation($"[{method}][{context.Request.Host}{path}{query}][port:{port}]");
 
@@ -147,7 +148,8 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         if (endpoint == null)
         {
             TopazDiagnostics.TryRecordRequest(traceStartUtc, Stopwatch.GetElapsedTime(traceStart).TotalMilliseconds,
-                method, path, query.Value, port, endpointName: null, providerNamespace: null, statusCode: 404, exception: null);
+                method, path, query.Value, port, endpointName: null, providerNamespace: null, statusCode: 404,
+                exception: null, traceParent: traceParent);
             await CreateNotFoundResponse(context, method, path);
             return;
         }
@@ -162,7 +164,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
 
         TopazDiagnostics.TryRecordRequest(traceStartUtc, Stopwatch.GetElapsedTime(traceStart).TotalMilliseconds,
             method, path, query.Value, port, endpoint.GetType().Name, endpoint.ProviderNamespace,
-            (int)response.StatusCode, requestError);
+            (int)response.StatusCode, requestError, traceParent);
         var responseBytes = await response.Content.ReadAsByteArrayAsync();
         var textResponse = System.Text.Encoding.UTF8.GetString(responseBytes);
 

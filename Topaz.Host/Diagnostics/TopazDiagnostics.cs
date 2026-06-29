@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Topaz.Host.Diagnostics;
@@ -85,7 +86,8 @@ internal static class TopazDiagnostics
         string? endpointName,
         string? providerNamespace,
         int statusCode,
-        Exception? exception)
+        Exception? exception,
+        string? traceParent = null)
     {
         var writer = s_active;
         if (writer is null)
@@ -107,6 +109,13 @@ internal static class TopazDiagnostics
                 ["server.port"] = port,
                 ["http.response.status_code"] = statusCode,
             };
+
+            if (TryParseTraceParent(traceParent, out var traceId, out var parentSpanId))
+            {
+                record["traceId"] = traceId;
+                record["spanId"] = CreateSpanId();
+                record["parentSpanId"] = parentSpanId;
+            }
 
             if (!string.IsNullOrEmpty(query))
             {
@@ -141,6 +150,87 @@ internal static class TopazDiagnostics
                 Console.Error.WriteLine("[topaz-otel] span recording failed (further failures suppressed): " + ex.Message);
             }
         }
+    }
+
+    private static bool TryParseTraceParent(string? traceParent, out string traceId, out string parentSpanId)
+    {
+        traceId = string.Empty;
+        parentSpanId = string.Empty;
+        if (string.IsNullOrWhiteSpace(traceParent))
+        {
+            return false;
+        }
+
+        var parts = traceParent.Split('-');
+        if (parts.Length != 4
+            || !string.Equals(parts[0], "00", StringComparison.OrdinalIgnoreCase)
+            || !IsLowerHexLength(parts[1], 32)
+            || !IsLowerHexLength(parts[2], 16)
+            || IsAllZero(parts[1])
+            || IsAllZero(parts[2]))
+        {
+            return false;
+        }
+
+        traceId = parts[1].ToLowerInvariant();
+        parentSpanId = parts[2].ToLowerInvariant();
+        return true;
+    }
+
+    private static string CreateSpanId()
+    {
+        Span<byte> bytes = stackalloc byte[8];
+        do
+        {
+            RandomNumberGenerator.Fill(bytes);
+        }
+        while (IsAllZero(bytes));
+
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static bool IsAllZero(ReadOnlySpan<byte> bytes)
+    {
+        foreach (var b in bytes)
+        {
+            if (b != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsLowerHexLength(string value, int length)
+    {
+        if (value.Length != length)
+        {
+            return false;
+        }
+
+        foreach (var c in value)
+        {
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsAllZero(string value)
+    {
+        foreach (var c in value)
+        {
+            if (c != '0')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
