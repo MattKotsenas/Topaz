@@ -101,7 +101,7 @@ internal sealed class SqliteTableEntityStore : ITableEntityStore
         }
     }
 
-    public void Update(string scope, string partitionKey, string rowKey, string bodyJson, string ifMatch, bool merge)
+    public string Update(string scope, string partitionKey, string rowKey, string bodyJson, string ifMatch, bool merge)
     {
         lock (_gate)
         {
@@ -120,6 +120,7 @@ internal sealed class SqliteTableEntityStore : ITableEntityStore
             var stored = Stamp(result.ToJsonString(), partitionKey, rowKey, out var ts, out var etag);
             Write(scope, partitionKey, rowKey, ts, etag, stored, tx);
             tx.Commit();
+            return etag;
         }
     }
 

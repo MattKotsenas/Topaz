@@ -22,9 +22,9 @@ internal interface ITableEntityStore
 
     /// <summary>
     /// Conditionally updates an existing entity in one transaction. <paramref name="merge"/> overlays properties;
-    /// otherwise replaces. Throws when absent or when the If-Match precondition fails.
+    /// otherwise replaces. Throws when absent or when the If-Match precondition fails. Returns the new etag.
     /// </summary>
-    void Update(string scope, string partitionKey, string rowKey, string bodyJson, string ifMatch, bool merge);
+    string Update(string scope, string partitionKey, string rowKey, string bodyJson, string ifMatch, bool merge);
 
     /// <summary>Conditionally deletes; throws when absent or when If-Match fails.</summary>
     void Delete(string scope, string partitionKey, string rowKey, string ifMatch);

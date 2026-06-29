@@ -156,7 +156,7 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         _store.Delete(scope, partitionKey, rowKey, etag);
     }
 
-    internal void UpsertEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
+    internal string UpsertEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
         ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName,
         string partitionKey, string rowKey)
     {
@@ -167,10 +167,11 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
         var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
         using var sr = new StreamReader(input);
-        _store.Upsert(scope, partitionKey, rowKey, sr.ReadToEnd());
+        var stored = _store.Upsert(scope, partitionKey, rowKey, sr.ReadToEnd());
+        return JsonNode.Parse(stored)?["odata.etag"]?.GetValue<string>() ?? string.Empty;
     }
 
-    internal void UpdateEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
+    internal string UpdateEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
         ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName, string partitionKey,
                                string rowKey, IHeaderDictionary headers, bool merge = false)
     {
@@ -184,6 +185,6 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         var etag = headers["If-Match"].FirstOrDefault() ?? "*";
         var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
         using var sr = new StreamReader(input, leaveOpen: true);
-        _store.Update(scope, partitionKey, rowKey, sr.ReadToEnd(), etag, merge);
+        return _store.Update(scope, partitionKey, rowKey, sr.ReadToEnd(), etag, merge);
     }
 }
