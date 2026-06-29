@@ -155,6 +155,98 @@ internal sealed class SqliteTableEntityStore : ITableEntityStore
         }
     }
 
+    public IReadOnlyList<TableBatchResult> ExecuteBatch(IReadOnlyList<TableBatchAction> actions)
+    {
+        lock (_gate)
+        {
+            using var tx = _connection.BeginTransaction();
+            var results = new List<TableBatchResult>(actions.Count);
+            for (var i = 0; i < actions.Count; i++)
+            {
+                try
+                {
+                    results.Add(ApplyInTransaction(actions[i], tx));
+                }
+                catch (Exception ex) when (
+                    ex is EntityAlreadyExistsException or EntityNotFoundException or UpdateConditionNotSatisfiedException)
+                {
+                    tx.Rollback();
+                    throw new TableBatchConflictException(i, ex);
+                }
+            }
+
+            tx.Commit();
+            return results;
+        }
+    }
+
+    private TableBatchResult ApplyInTransaction(TableBatchAction a, SqliteTransaction tx)
+    {
+        switch (a.Op)
+        {
+            case TableBatchOp.Retrieve:
+                return new TableBatchResult(null,
+                    ReadBody(a.Scope, a.PartitionKey, a.RowKey, tx) ?? throw new EntityNotFoundException());
+
+            case TableBatchOp.Insert:
+            {
+                if (ReadBody(a.Scope, a.PartitionKey, a.RowKey, tx) is not null)
+                    throw new EntityAlreadyExistsException();
+                var stored = Stamp(a.BodyJson!, a.PartitionKey, a.RowKey, out var ts, out var etag);
+                Write(a.Scope, a.PartitionKey, a.RowKey, ts, etag, stored, tx);
+                return new TableBatchResult(etag, stored);
+            }
+
+            case TableBatchOp.Merge:
+            case TableBatchOp.Replace:
+            {
+                var existing = ReadBody(a.Scope, a.PartitionKey, a.RowKey, tx);
+                if (existing is null)
+                {
+                    // InsertOrMerge / InsertOrReplace: the SDK's unconditional upsert inserts a missing entity.
+                    if (!a.UpsertOnMissing) throw new EntityNotFoundException();
+                    var inserted = Stamp(a.BodyJson!, a.PartitionKey, a.RowKey, out var its, out var ietag);
+                    Write(a.Scope, a.PartitionKey, a.RowKey, its, ietag, inserted, tx);
+                    return new TableBatchResult(ietag, inserted);
+                }
+
+                EtagPrecondition.EnsureSatisfied(a.IfMatch, existing);
+                var incoming = JsonNode.Parse(a.BodyJson!)!.AsObject();
+                JsonObject body = incoming;
+                if (a.Op == TableBatchOp.Merge && JsonNode.Parse(existing) is JsonObject current)
+                {
+                    foreach (var property in incoming)
+                        current[property.Key] = property.Value?.DeepClone();
+                    body = current;
+                }
+
+                var stored = Stamp(body.ToJsonString(), a.PartitionKey, a.RowKey, out var ts, out var etag);
+                Write(a.Scope, a.PartitionKey, a.RowKey, ts, etag, stored, tx);
+                return new TableBatchResult(etag, stored);
+            }
+
+            case TableBatchOp.Delete:
+            {
+                var existing = ReadBody(a.Scope, a.PartitionKey, a.RowKey, tx) ?? throw new EntityNotFoundException();
+                EtagPrecondition.EnsureSatisfied(a.IfMatch, existing);
+                DeleteRow(a.Scope, a.PartitionKey, a.RowKey, tx);
+                return new TableBatchResult(null, null);
+            }
+
+            default:
+                throw new InvalidOperationException("Unknown batch op " + a.Op);
+        }
+    }
+
+    private void DeleteRow(string scope, string pk, string rk, SqliteTransaction tx)
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "DELETE FROM entities WHERE scope=$s AND pk=$p AND rk=$r;";
+        Bind(cmd, scope, pk, rk);
+        cmd.ExecuteNonQuery();
+    }
+
     private string? ReadBody(string scope, string pk, string rk, SqliteTransaction? tx = null)
     {
         using var cmd = _connection.CreateCommand();

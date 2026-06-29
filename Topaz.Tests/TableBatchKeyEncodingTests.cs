@@ -7,6 +7,7 @@ using NUnit.Framework;
 using Topaz.Service.Shared.Domain;
 using Topaz.Service.Storage;
 using Topaz.Service.Storage.Endpoints.Table;
+using Topaz.Service.Storage.Persistence;
 using Topaz.Shared;
 
 namespace Topaz.Tests;
@@ -68,18 +69,19 @@ public class TableBatchKeyEncodingTests
     {
         var logger = new PrettyTopazLogger();
         var provider = new TableResourceProvider(logger);
-        var dataPlane = new TableServiceDataPlane(provider, logger);
+        var dbDir = Path.Combine(Path.GetTempPath(), "topaz-batchkey-" + Guid.NewGuid().ToString("N"));
+        var store = SqliteTableEntityStore.ForDatabase(Path.Combine(dbDir, "t.db"));
+        var dataPlane = new TableServiceDataPlane(provider, logger, store);
 
         var subscription = SubscriptionIdentifier.From(Guid.NewGuid());
         var resourceGroup = ResourceGroupIdentifier.From("rg-" + Guid.NewGuid().ToString("N")[..8]);
         const string account = "acct";
         const string table = "Widgets";
         const string pk = "p1";
-        // A reserved char ('@') the SDK URL-encodes (%40) but that is a valid filename character on every OS.
+        // A reserved char ('@') the SDK URL-encodes (%40); the decode behaviour is identical for any reserved char.
         const string rawRowKey = "owner@example-1";
 
-        var dataDir = provider.GetTableDataPath(subscription, resourceGroup, table, account);
-        Directory.CreateDirectory(dataDir);
+        var scope = provider.GetTableDataPath(subscription, resourceGroup, table, account);
 
         try
         {
@@ -89,8 +91,7 @@ public class TableBatchKeyEncodingTests
                 subscription, resourceGroup, table, account);
 
             // Precondition: exactly one physical row after the insert.
-            Assert.That(Directory.GetFiles(dataDir, "*.json").Length, Is.EqualTo(1),
-                "precondition: the insert created exactly one row");
+            Assert.That(store.List(scope), Has.Count.EqualTo(1), "precondition: the insert created exactly one row");
 
             // 2) A batched MERGE addresses the SAME entity by URL, where the SDK URL-encodes '@' as %40.
             var url = $"{table}(PartitionKey='{pk}',RowKey='{Uri.EscapeDataString(rawRowKey)}')";
@@ -104,9 +105,10 @@ public class TableBatchKeyEncodingTests
                 Body("""{"State":"Completed"}"""),
                 subscription, resourceGroup, table, account, parsedPk!, parsedRk!, Unconditional(), merge: true);
 
-            // 3) The fix: still exactly ONE row - the merge updated the existing entity rather than
-            //    creating a second (encoded-key) row. Without the decode this is 2 (the duplicate).
-            Assert.That(Directory.GetFiles(dataDir, "*.json").Length, Is.EqualTo(1),
+            // 3) The fix: still exactly ONE row - the merge updated the existing entity rather than creating a
+            //    second (encoded-key) row. Without the decode this is 2 (the duplicate); the store's PRIMARY KEY
+            //    (scope, pk, rk) would hold the encoded RowKey as a distinct second row.
+            Assert.That(store.List(scope), Has.Count.EqualTo(1),
                 "a batched merge addressing the entity by its URL-encoded key must update the SAME row, not create a duplicate");
 
             // 4) The merge actually applied to the original entity and preserved the omitted property.
@@ -116,7 +118,7 @@ public class TableBatchKeyEncodingTests
         }
         finally
         {
-            try { Directory.Delete(dataDir, recursive: true); } catch { /* best-effort cleanup */ }
+            try { Directory.Delete(dbDir, recursive: true); } catch { /* best-effort cleanup */ }
         }
     }
 }

@@ -31,4 +31,13 @@ internal interface ITableEntityStore
 
     /// <summary>All entity bodies in a scope, ordered by (PartitionKey, RowKey) for deterministic paging.</summary>
     IReadOnlyList<string> List(string scope);
+
+    /// <summary>
+    /// Executes a $batch changeset (Entity Group Transaction) atomically: all operations apply in a single
+    /// transaction, and if any operation fails its precondition (or insert/lookup) the whole batch is rolled back
+    /// and a <see cref="TableBatchConflictException"/> identifying the failing op is thrown. This is the
+    /// atomic-plus-isolated guarantee real Azure Table $batch gives - and that a distributed job sequencer relies
+    /// on for exactly-once successor scheduling.
+    /// </summary>
+    IReadOnlyList<TableBatchResult> ExecuteBatch(IReadOnlyList<TableBatchAction> actions);
 }

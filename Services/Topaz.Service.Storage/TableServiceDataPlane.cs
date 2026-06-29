@@ -13,9 +13,9 @@ using Topaz.Service.Shared.Domain;
 
 namespace Topaz.Service.Storage;
 
-internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvider, ITopazLogger logger)
+internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvider, ITopazLogger logger, ITableEntityStore? store = null)
 {
-    private readonly ITableEntityStore _store = SqliteTableEntityStore.Default;
+    private readonly ITableEntityStore _store = store ?? SqliteTableEntityStore.Default;
 
     internal string InsertEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
         ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName)
@@ -175,16 +175,40 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName, string partitionKey,
                                string rowKey, IHeaderDictionary headers, bool merge = false)
     {
+        // Absent If-Match means an unconditional update (e.g. InsertOrMerge / InsertOrReplace, which send no
+        // precondition). "*" skips the precondition. Missing entity throws EntityNotFound so upsert callers retry.
+        return UpdateEntity(input, subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName,
+            partitionKey, rowKey, headers["If-Match"].FirstOrDefault() ?? "*", merge);
+    }
+
+    internal string UpdateEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
+        ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName, string partitionKey,
+                               string rowKey, string ifMatch, bool merge = false)
+    {
         logger.LogDebug(nameof(TableServiceDataPlane), nameof(UpdateEntity), "Executing {0}: {1} {2}", nameof(UpdateEntity), tableName, storageAccountName);
 
         PathGuard.ValidateName(partitionKey);
         PathGuard.ValidateName(rowKey);
 
-        // Absent If-Match means an unconditional update (e.g. InsertOrMerge / InsertOrReplace, which send no
-        // precondition). "*" skips the precondition. Missing entity throws EntityNotFound so upsert callers retry.
-        var etag = headers["If-Match"].FirstOrDefault() ?? "*";
         var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
         using var sr = new StreamReader(input, leaveOpen: true);
-        return _store.Update(scope, partitionKey, rowKey, sr.ReadToEnd(), etag, merge);
+        return _store.Update(scope, partitionKey, rowKey, sr.ReadToEnd(), ifMatch, merge);
+    }
+
+    /// <summary>Resolves the store scope (one table within one account) so an endpoint can build batch actions.</summary>
+    internal string GetTableScope(SubscriptionIdentifier subscriptionIdentifier,
+        ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName) =>
+        resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
+
+    /// <summary>
+    /// Executes a $batch changeset (Entity Group Transaction) atomically against the store: all operations commit
+    /// together or none do. Throws <see cref="TableBatchConflictException"/> (carrying the failing op index) when
+    /// any operation fails its precondition/insert/lookup, leaving the store unchanged.
+    /// </summary>
+    internal IReadOnlyList<TableBatchResult> ExecuteBatch(IReadOnlyList<TableBatchAction> actions)
+    {
+        logger.LogDebug(nameof(TableServiceDataPlane), nameof(ExecuteBatch),
+            "Executing {0}: {1} op(s)", nameof(ExecuteBatch), actions.Count.ToString());
+        return _store.ExecuteBatch(actions);
     }
 }

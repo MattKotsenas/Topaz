@@ -2,21 +2,23 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Data.Sqlite;
 using NUnit.Framework;
 using Topaz.Service.Shared.Domain;
 using Topaz.Service.Storage;
+using Topaz.Service.Storage.Persistence;
 using Topaz.Shared;
 
 namespace Topaz.Tests;
 
 /// <summary>
-/// Direct, host-free coverage of the table data-plane under concurrent writers and readers of the
-/// SAME entity. The data plane is file-backed; a non-atomic write (truncate-then-write, or a
-/// delete-then-write gap) lets a concurrent reader observe an empty/partial file (JSON parse failure)
-/// or a missing file (EntityNotFound), which the emulator surfaces as a 500. A high-frequency writer
-/// (e.g. a fast job-poll updating one row) overlapping a reader reproduced this; callers that do not
-/// retry 500 then failed intermittently. The data plane serialises per-entity access so a reader always
-/// sees complete old-or-new content - never torn or missing.
+/// Direct, host-free coverage of the table data-plane under concurrent writers and readers of the SAME entity.
+/// The data plane is backed by the SQLite transactional store: a read-modify-write runs in one transaction and
+/// reads observe only committed state, so a concurrent reader can never see a torn, empty, or missing entity - the
+/// failure mode the earlier file store allowed under a non-atomic truncate-then-write. A high-frequency writer
+/// (e.g. a fast job-poll updating one row) overlapping a reader reproduced the old corruption; these tests prove
+/// the SQLite substrate eliminates it, both through the data plane and from an independent connection observing the
+/// persisted rows directly.
 /// </summary>
 [TestFixture]
 public class TableConcurrencyTests
@@ -136,21 +138,23 @@ public class TableConcurrencyTests
     }
 
     /// <summary>
-    /// Coverage of the on-disk durability invariant the per-entity lock alone does NOT provide: the entity FILE
-    /// must never be observed (or left) zero-byte or partial. <see cref="ConcurrentUpdatesAndReads_NeverObserveTornOrMissingEntity"/>
-    /// reads through <c>GetEntity</c>, which holds the per-entity lock, so it never sees a write in progress. But a
-    /// non-atomic File.WriteAllText (truncate-then-write) leaves the file transiently - and, if the write is
-    /// interrupted after the truncate (an ASP.NET Core request abort / thread teardown mid-write), PERSISTENTLY -
-    /// zero bytes. A 0-byte stored entity is exactly what stranded a background job and wedged a consumer
-    /// deployment. This test observes the raw file directly (bypassing the lock) under concurrent writes and asserts it
-    /// is never zero-byte or unparseable - which holds only because writes are now atomic (temp file + rename).
+    /// The durability invariant from an INDEPENDENT connection: a second SQLite connection observing the persisted
+    /// rows directly (bypassing the writer's in-process gate) never sees the contended entity's body empty or partial
+    /// under concurrent writes, and the row is left complete + parseable after the storm. The earlier file store could
+    /// leave a 0-byte file after a truncate-then-write was interrupted mid-write - the exact corruption that stranded a
+    /// background job and wedged a consumer deployment. SQLite commits each write atomically, so a cross-connection read
+    /// only ever sees a whole committed body. (The sibling test reads through the data plane's own connection; this one
+    /// reads from a separate connection, proving the durability holds across connections, not just under the gate.)
     /// </summary>
     [Test]
-    public void ConcurrentWrites_TheEntityFileOnDiskIsNeverTornOrZeroByte()
+    public void ConcurrentWrites_CommittedEntityIsNeverObservedTornOrEmpty()
     {
         var logger = new PrettyTopazLogger();
         var provider = new TableResourceProvider(logger);
-        var dataPlane = new TableServiceDataPlane(provider, logger);
+        var dbDir = Path.Combine(Path.GetTempPath(), "topaz-atomic-" + Guid.NewGuid().ToString("N"));
+        var dbPath = Path.Combine(dbDir, "t.db");
+        var store = SqliteTableEntityStore.ForDatabase(dbPath);
+        var dataPlane = new TableServiceDataPlane(provider, logger, store);
 
         var subscription = SubscriptionIdentifier.From(Guid.NewGuid());
         var resourceGroup = ResourceGroupIdentifier.From("rg-" + Guid.NewGuid().ToString("N")[..8]);
@@ -159,9 +163,7 @@ public class TableConcurrencyTests
         const string pk = "pk1";
         const string rk = "rk1";
 
-        var dataDir = provider.GetTableDataPath(subscription, resourceGroup, table, account);
-        Directory.CreateDirectory(dataDir);
-        var entityFile = Path.Combine(dataDir, $"{pk}_{rk}.json");
+        var scope = provider.GetTableDataPath(subscription, resourceGroup, table, account);
 
         const int writerTasks = 4;
         const int updatesPerWriter = 200;
@@ -184,23 +186,11 @@ public class TableConcurrencyTests
                 {
                     for (var i = 0; i < updatesPerWriter; i++)
                     {
-                        var json = $$"""{"PartitionKey":"{{pk}}","RowKey":"{{rk}}","Counter":"{{i}}","Writer":"{{w}}"}""";
-                        for (var attempt = 1; ; attempt++)
-                        {
-                            try
-                            {
-                                dataPlane.UpdateEntity(Body(json), subscription, resourceGroup, table, account, pk, rk, Unconditional());
-                                break;
-                            }
-                            catch (UnauthorizedAccessException) when (attempt < 100)
-                            {
-                                // Windows-only artifact: MoveFileEx(REPLACE_EXISTING) cannot replace a file the
-                                // unlocked raw observer below holds open. The Linux production target's rename(2)
-                                // succeeds over open files, so AtomicFile never throws there; this retry just keeps
-                                // the Windows dev-box test honest without weakening the on-disk assertion.
-                                Thread.Sleep(2);
-                            }
-                        }
+                        // Unconditional update on the SAME entity from every writer = maximum write contention on
+                        // one row, the fast-writer-vs-reader overlap. The store serialises commits; no write may fail.
+                        dataPlane.UpdateEntity(
+                            Body($$"""{"PartitionKey":"{{pk}}","RowKey":"{{rk}}","Counter":"{{i}}","Writer":"{{w}}"}"""),
+                            subscription, resourceGroup, table, account, pk, rk, Unconditional());
                         Interlocked.Increment(ref writesDone);
                     }
                 }
@@ -208,45 +198,40 @@ public class TableConcurrencyTests
                 finally { writersComplete.Signal(); }
             })).ToArray();
 
-            // A single raw observer reads the file bytes directly - NOT via GetEntity, so it is not serialised with
-            // the writers by the per-entity lock - modelling an unlocked reader (e.g. a table query scan). It opens
-            // with FileShare.Delete and yields briefly between reads so it does not hold the file open continuously:
-            // on Windows MoveFileEx cannot replace a file whose name is held open, so a continuous unlocked reader
-            // would starve the writer's atomic rename (in production GetEntity reads under the same lock as the
-            // write, so they never overlap). A non-atomic truncate-then-write still exposes its 0-byte / partial
-            // window to this reader; the atomic temp+rename never does.
+            // A single observer reads the persisted body from its OWN read-only SQLite connection - NOT through the
+            // data plane, so it is not serialised with the writers by the store's in-process gate. WAL lets it read
+            // committed state concurrently. A non-atomic write would expose a 0-byte / partial body window to it;
+            // SQLite's atomic commit never does.
             var observers = Enumerable.Range(0, 1).Select(_ => Task.Run(() =>
             {
+                using var read = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = dbPath,
+                    Mode = SqliteOpenMode.ReadOnly,
+                    Cache = SqliteCacheMode.Shared,
+                }.ToString());
+                read.Open();
                 while (!writersComplete.IsSet)
                 {
                     try
                     {
-                        byte[] bytes;
-                        using (var fs = new FileStream(entityFile, FileMode.Open, FileAccess.Read,
-                                   FileShare.ReadWrite | FileShare.Delete))
+                        using var cmd = read.CreateCommand();
+                        cmd.CommandText = "SELECT body FROM entities WHERE scope=$s AND pk=$p AND rk=$r;";
+                        cmd.Parameters.AddWithValue("$s", scope);
+                        cmd.Parameters.AddWithValue("$p", pk);
+                        cmd.Parameters.AddWithValue("$r", rk);
+                        var observed = cmd.ExecuteScalar() as string;
+                        if (string.IsNullOrEmpty(observed))
                         {
-                            bytes = new byte[fs.Length];
-                            var off = 0;
-                            while (off < bytes.Length)
-                            {
-                                var n = fs.Read(bytes, off, bytes.Length - off);
-                                if (n == 0) break;
-                                off += n;
-                            }
-                        }
-                        if (bytes.Length == 0)
-                        {
-                            observerErrors.Add(new IOException("entity file observed at 0 bytes (non-atomic truncate-then-write)"));
+                            observerErrors.Add(new InvalidOperationException(
+                                "the contended entity was observed empty/missing in committed state"));
                             continue;
                         }
-                        JsonNode.Parse(Encoding.UTF8.GetString(bytes)); // partial content => JsonException
+
+                        JsonNode.Parse(observed); // a partial body => JsonException
                         Interlocked.Increment(ref observations);
                     }
                     catch (System.Text.Json.JsonException ex) { observerErrors.Add(ex); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        /* file briefly unopenable during the atomic rename - expected on Windows, retry */
-                    }
 
                     Thread.Sleep(1);
                 }
@@ -255,23 +240,25 @@ public class TableConcurrencyTests
             Task.WaitAll(writers.Concat(observers).ToArray(), TimeSpan.FromSeconds(60));
 
             Assert.That(writerErrors, Is.Empty,
-                "no writer may fail; first error: " + (writerErrors.FirstOrDefault()?.ToString() ?? "<none>"));
+                "no writer may fail under concurrent same-entity updates; first error: "
+                + (writerErrors.FirstOrDefault()?.ToString() ?? "<none>"));
             Assert.That(writesDone, Is.EqualTo(writerTasks * updatesPerWriter), "precondition: all writes completed");
-            Assert.That(observations, Is.GreaterThan(0), "precondition: observers actually read the file during writes");
+            Assert.That(observations, Is.GreaterThan(0),
+                "precondition: the observer actually read committed state during the writes");
 
             Assert.That(observerErrors, Is.Empty,
-                "the entity file must never be observed zero-byte or partial on disk - writes must be atomic; first error: "
+                "the committed entity body must never be observed empty or partial from an independent connection; first error: "
                 + (observerErrors.FirstOrDefault()?.ToString() ?? "<none>"));
 
-            // And it must be left complete + parseable after the storm (a persistent 0-byte file is the stall).
-            var finalBytes = File.ReadAllBytes(entityFile);
-            Assert.That(finalBytes.Length, Is.GreaterThan(0), "the entity file must not be left zero-byte");
-            Assert.That(() => JsonNode.Parse(Encoding.UTF8.GetString(finalBytes)), Throws.Nothing,
-                "the final entity file must be valid JSON (a torn write would strand any reader of this entity)");
+            // And it must be left complete + parseable after the storm (a persistent empty entity is the stall).
+            var finalBody = dataPlane.GetEntity(subscription, resourceGroup, table, account, pk, rk);
+            Assert.That(finalBody, Is.Not.Null.And.Not.Empty, "the entity must not be left empty");
+            Assert.That(() => JsonNode.Parse(finalBody), Throws.Nothing,
+                "the final entity must be valid JSON (a torn write would strand any reader of this entity)");
         }
         finally
         {
-            try { Directory.Delete(dataDir, recursive: true); }
+            try { Directory.Delete(dbDir, recursive: true); }
             catch (IOException ex) { TestContext.Out.WriteLine("cleanup failed: " + ex.Message); }
             catch (UnauthorizedAccessException ex) { TestContext.Out.WriteLine("cleanup failed: " + ex.Message); }
         }
