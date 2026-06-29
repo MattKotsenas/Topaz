@@ -83,7 +83,7 @@ internal sealed class DeleteMessageEndpoint(Pipeline eventPipeline, ITopazLogger
 
             // Delete the message
             var result = _dataPlane.DeleteMessage(subscriptionIdentifier, resourceGroupIdentifier,
-                storageAccount.Name, queueName, messageId);
+                storageAccount.Name, queueName, messageId, popReceipt);
 
             switch (result.Result)
             {
@@ -97,6 +97,11 @@ internal sealed class DeleteMessageEndpoint(Pipeline eventPipeline, ITopazLogger
                         "Message {0} from queue {1} deleted successfully.", messageId, queueName);
                     break;
                 }
+                case OperationResult.BadRequest:
+                    // A stale/mismatched pop receipt - Azure returns 400 PopReceiptMismatch (the message exists but
+                    // the caller's lease has lapsed; another consumer re-dequeued it and regenerated the receipt).
+                    WriteQueueError(response, HttpStatusCode.BadRequest, result.Code, result.Reason);
+                    break;
                 case OperationResult.NotFound:
                     response.StatusCode = HttpStatusCode.NotFound;
                     response.Content = new ByteArrayContent([]);

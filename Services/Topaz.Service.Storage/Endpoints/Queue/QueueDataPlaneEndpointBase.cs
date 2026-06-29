@@ -90,6 +90,17 @@ internal abstract class QueueDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
         return true;
     }
 
+    // Writes an Azure-style Queue Storage error: the HTTP status, the x-ms-error-code header the SDK surfaces as
+    // RequestFailedException.ErrorCode, and the standard <Error><Code/><Message/></Error> XML body.
+    protected static void WriteQueueError(HttpResponseMessage response, HttpStatusCode status, string? code, string? message)
+    {
+        response.StatusCode = status;
+        if (!string.IsNullOrEmpty(code))
+            response.Headers.TryAddWithoutValidation("x-ms-error-code", code);
+        var body = $"<?xml version=\"1.0\" encoding=\"utf-8\"?><Error><Code>{code}</Code><Message>{message}</Message></Error>";
+        response.Content = new StringContent(body, Encoding.UTF8, "application/xml");
+    }
+
     protected bool TryGetStorageAccount(IHeaderDictionary headers, out StorageAccountResource? storageAccount)
     {
         Logger.LogDebug(nameof(QueueDataPlaneEndpointBase), nameof(TryGetStorageAccount),

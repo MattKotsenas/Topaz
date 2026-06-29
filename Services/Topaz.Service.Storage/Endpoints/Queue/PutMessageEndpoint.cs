@@ -157,8 +157,9 @@ internal sealed class PutMessageEndpoint(Pipeline eventPipeline, ITopazLogger lo
             }
 
             // Put the message
+            var popReceipt = context.Request.Query["popreceipt"].FirstOrDefault();
             var result = _dataPlane.PutMessage(subscriptionIdentifier, resourceGroupIdentifier,
-                storageAccount.Name, queueName, messageId, messageContent, visibilityTimeout);
+                storageAccount.Name, queueName, messageId, messageContent, visibilityTimeout, popReceipt);
 
             switch (result.Result)
             {
@@ -178,6 +179,11 @@ internal sealed class PutMessageEndpoint(Pipeline eventPipeline, ITopazLogger lo
                         "Message {0} in queue {1} updated successfully.", messageId, queueName);
                     break;
                 }
+                case OperationResult.BadRequest:
+                    // A stale/mismatched pop receipt - Azure returns 400 PopReceiptMismatch (another consumer
+                    // re-dequeued the message after its visibility timeout and regenerated the receipt).
+                    WriteQueueError(response, HttpStatusCode.BadRequest, result.Code, result.Reason);
+                    break;
                 case OperationResult.NotFound:
                     response.StatusCode = HttpStatusCode.NotFound;
                     response.Content = new ByteArrayContent([]);

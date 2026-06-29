@@ -167,7 +167,7 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
 
     public DataPlaneOperationResult<QueueMessage> PutMessage(SubscriptionIdentifier subscriptionIdentifier,
         ResourceGroupIdentifier resourceGroupIdentifier, string storageAccountName, string queueName,
-        string messageId, string content, int visibilityTimeout = 30)
+        string messageId, string content, int visibilityTimeout = 30, string? popReceipt = null)
     {
         logger.LogDebug(nameof(QueueServiceDataPlane), nameof(PutMessage),
             "Executing {0}: {1} {2} {3}", nameof(PutMessage), storageAccountName, queueName, messageId);
@@ -209,6 +209,17 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
             var existingContent = File.ReadAllText(messagePath);
             var message = JsonSerializer.Deserialize<QueueMessage>(existingContent, GlobalSettings.JsonOptions)
                 ?? throw new InvalidOperationException("Failed to deserialize message");
+
+            // Azure regenerates a message's pop receipt on every dequeue (Get Messages) and every update, and an
+            // Update Message must present the CURRENT receipt. A stale one - e.g. the message was re-dequeued by
+            // another consumer after its visibility timeout expired - is rejected with 400 PopReceiptMismatch. This
+            // is the optimistic claim a losing consumer hits, and the property a distributed job dispatcher relies
+            // on so a trigger isn't updated/re-claimed by a worker whose lease has already lapsed.
+            if (!string.IsNullOrEmpty(popReceipt) && !PopReceiptMatches(message, popReceipt))
+            {
+                return new DataPlaneOperationResult<QueueMessage>(OperationResult.BadRequest, null,
+                    "The specified pop receipt did not match the pop receipt for a dequeued message.", "PopReceiptMismatch");
+            }
 
             // A visibility-only update sends no request body, so the content arrives empty; it must
             // preserve the existing message content. Only overwrite the content when new content was
@@ -290,7 +301,8 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
     }
 
     public DataPlaneOperationResult DeleteMessage(SubscriptionIdentifier subscriptionIdentifier,
-        ResourceGroupIdentifier resourceGroupIdentifier, string storageAccountName, string queueName, string messageId)
+        ResourceGroupIdentifier resourceGroupIdentifier, string storageAccountName, string queueName, string messageId,
+        string? popReceipt = null)
     {
         logger.LogDebug(nameof(QueueServiceDataPlane), nameof(DeleteMessage),
             "Executing {0}: {1} {2} {3}", nameof(DeleteMessage), storageAccountName, queueName, messageId);
@@ -316,11 +328,31 @@ internal sealed class QueueServiceDataPlane(QueueServiceControlPlane controlPlan
                     "Message not found.", "MessageNotFound");
             }
 
+            // Azure requires the caller's pop receipt to match the message's CURRENT receipt (regenerated on every
+            // dequeue/update). A stale receipt - e.g. the message was re-dequeued by another consumer after its
+            // visibility timeout - is rejected with 400 PopReceiptMismatch, which is how exactly-once delete is
+            // enforced: a worker whose lease lapsed cannot delete a trigger another worker now owns.
+            if (!string.IsNullOrEmpty(popReceipt))
+            {
+                var message = JsonSerializer.Deserialize<QueueMessage>(File.ReadAllText(messagePath),
+                    GlobalSettings.JsonOptions);
+                if (message is null || !PopReceiptMatches(message, popReceipt))
+                {
+                    return new DataPlaneOperationResult(OperationResult.BadRequest,
+                        "The specified pop receipt did not match the pop receipt for a dequeued message.", "PopReceiptMismatch");
+                }
+            }
+
             File.Delete(messagePath);
         }
 
         return new DataPlaneOperationResult(OperationResult.Success, null, null);
     }
+
+    // A message's pop receipt is regenerated on every dequeue (Get Messages) and every update; Delete/Update must
+    // present the current one. Ordinal comparison matches the opaque-token semantics Azure uses.
+    private static bool PopReceiptMatches(QueueMessage message, string popReceipt) =>
+        string.Equals(message.PopReceipt, popReceipt, StringComparison.Ordinal);
 
     public DataPlaneOperationResult<QueueMessage> PeekMessage(SubscriptionIdentifier subscriptionIdentifier,
         ResourceGroupIdentifier resourceGroupIdentifier, string storageAccountName, string queueName, string messageId)
