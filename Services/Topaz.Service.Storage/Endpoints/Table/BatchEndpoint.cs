@@ -100,7 +100,11 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         // partition it targets. Execute the whole changeset in one store transaction under a per-(account,partition)
         // lock, so two concurrent EGTs neither interleave nor partially apply - the isolation + atomicity a
         // distributed job sequencer relies on for exactly-once successor scheduling. (All EGT ops share a partition.)
-        var batchPartitionKey = operations.Count > 0 ? operations[0].PartitionKey : null;
+        // The lock key comes from the RESOLVED actions, not operations[0]: a keyless POST insert carries its key in
+        // the body (operations[0].PartitionKey is null there), so use the first action that actually has one.
+        var batchPartitionKey = actions
+            .Select(a => a.PartitionKey)
+            .FirstOrDefault(pk => !string.IsNullOrEmpty(pk));
         IReadOnlyList<TableBatchResult> results = Array.Empty<TableBatchResult>();
         TableBatchConflictException? conflict = null;
         lock (BatchPartitionLock(storageAccount.Name, batchPartitionKey))
@@ -128,7 +132,7 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
             // SDK surfaces it as a transaction failure carrying that operation's index. Nothing else was applied.
             var failedOp = operations[conflict.Index];
             var failure = MapFailure(conflict.InnerException);
-            AppendErrorPart(sb, changesetBoundary, failedOp, failure);
+            AppendErrorPart(sb, changesetBoundary, failedOp, conflict.Index, failure);
             Logger.LogDebug(nameof(BatchEndpoint), nameof(GetResponse),
                 "$batch rolled back at op {0} ({1}) -> {2}", conflict.Index.ToString(), failedOp.Method,
                 ((int)failure.status).ToString());
@@ -248,8 +252,10 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
     }
 
     // Emits the single changeset error part Azure returns for a rolled-back EGT, keyed to the failing op's Content-ID.
+    // Azure prefixes the error message value with the zero-based index of the failing operation ("N:Code"); the SDK
+    // parses it to surface the failed transaction-action index.
     private static void AppendErrorPart(StringBuilder sb, string changesetBoundary, BatchOperation op,
-        (HttpStatusCode status, string code) failure)
+        int failedIndex, (HttpStatusCode status, string code) failure)
     {
         sb.Append("--").Append(changesetBoundary).Append("\r\n");
         sb.Append("Content-Type: application/http\r\n");
@@ -258,7 +264,8 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
         sb.Append("Content-ID: ").Append(op.ContentId ?? "0").Append("\r\n");
         sb.Append("Content-Type: application/json\r\n\r\n");
         sb.Append("{\"odata.error\":{\"code\":\"").Append(failure.code)
-          .Append("\",\"message\":{\"lang\":\"en-US\",\"value\":\"").Append(failure.code).Append("\"}}}").Append("\r\n");
+          .Append("\",\"message\":{\"lang\":\"en-US\",\"value\":\"").Append(failedIndex).Append(':').Append(failure.code)
+          .Append("\"}}}").Append("\r\n");
     }
 
     private static (HttpStatusCode status, string code) MapFailure(Exception? cause) => cause switch

@@ -215,4 +215,25 @@ public class SqliteTableEntityStoreTests
         Assert.That(results[0].Body, Is.Not.Null);
         Assert.That(JsonNode.Parse(results[0].Body!)!["Name"]!.GetValue<string>(), Is.EqualTo("a"));
     }
+
+    [Test]
+    public void Batch_rolls_back_on_an_unexpected_op_failure_not_just_preconditions()
+    {
+        _store.Insert(Scope, "p", "a", "{\"V\":1}");
+        Assert.That(_store.Exists(Scope, "p", "new"), Is.False, "precondition: 'new' absent");
+
+        // op0 inserts a new row; op1 merges with a MALFORMED body (JsonNode.Parse throws - not a precondition
+        // failure). The whole batch must still roll back atomically and report the failing index, never commit op0
+        // nor escape unwrapped.
+        var ex = Assert.Throws<TableBatchConflictException>(
+            () => _store.ExecuteBatch(new[] { Insert("p", "new", "{\"V\":2}"), Merge("p", "a", "{ not valid json") }));
+
+        Assert.That(ex!.Index, Is.EqualTo(1));
+        Assert.That(ex.InnerException, Is.Not.Null
+            .And.Not.InstanceOf<EntityAlreadyExistsException>()
+            .And.Not.InstanceOf<EntityNotFoundException>()
+            .And.Not.InstanceOf<UpdateConditionNotSatisfiedException>(),
+            "the failure is an unexpected (non-precondition) exception");
+        Assert.That(_store.Exists(Scope, "p", "new"), Is.False, "op0's insert was rolled back");
+    }
 }

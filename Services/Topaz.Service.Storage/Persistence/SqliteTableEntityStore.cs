@@ -167,9 +167,11 @@ internal sealed class SqliteTableEntityStore : ITableEntityStore
                 {
                     results.Add(ApplyInTransaction(actions[i], tx));
                 }
-                catch (Exception ex) when (
-                    ex is EntityAlreadyExistsException or EntityNotFoundException or UpdateConditionNotSatisfiedException)
+                catch (Exception ex)
                 {
+                    // ANY failed operation rolls the whole changeset back (all-or-nothing EGT). Precondition/
+                    // insert/lookup failures map to 409/404/412; anything else (e.g. a malformed entity body) maps
+                    // to 400 - but either way the transaction is rolled back and the batch reports the failed index.
                     tx.Rollback();
                     throw new TableBatchConflictException(i, ex);
                 }
