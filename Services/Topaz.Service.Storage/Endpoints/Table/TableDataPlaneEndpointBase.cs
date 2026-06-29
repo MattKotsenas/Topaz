@@ -309,10 +309,14 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
     private void ApplyMutationEtag(string op, string tableName, string partitionKey, string rowKey,
         string? newEtag, IHeaderDictionary headers, HttpResponseMessage response)
     {
+        // Azure Table Insert/Update/Merge always returns the new entity ETag in the response header. The legacy
+        // Table SDK uses it to refresh the in-memory entity's ETag (and thus the If-Match it sends on the next
+        // conditional write); omitting it leaves the client's ETag stale, so a later optimistic-concurrency check
+        // against that entity compares a stale snapshot to the current value. Match Azure: always return it.
         if (!string.IsNullOrEmpty(newEtag) &&
-            Environment.GetEnvironmentVariable("TOPAZ_ETAG_HEADER_EXPERIMENT") == "1")
+            System.Net.Http.Headers.EntityTagHeaderValue.TryParse(newEtag, out var etagHeader))
         {
-            try { response.Headers.ETag = System.Net.Http.Headers.EntityTagHeaderValue.Parse(newEtag); } catch { }
+            response.Headers.ETag = etagHeader;
         }
 
         var filter = Environment.GetEnvironmentVariable("TOPAZ_TABLE_TRACE_FILTER");
