@@ -96,6 +96,12 @@ public class Host
         // released cleanly.
         using var requestTracing = TopazDiagnostics.TryStart();
 
+        // Forward storage-layer table-op traces (from the storage service, which cannot reference the host) into
+        // the same OTel span file. Surfaces the read/modify/write etag timeline and ETag-header presence.
+        Topaz.Shared.StorageTracing.OnTableOp = requestTracing is null
+            ? null
+            : op => TopazDiagnostics.RecordTableOp(op.Op, op.Table, op.PartitionKey, op.RowKey, op.StoredEtag, op.ResponseHadEtag, op.TraceParent);
+
         GlobalDnsEntries.ConfigureLogger(_logger);
 
         var idFactory = new CorrelationIdFactory();

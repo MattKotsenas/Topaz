@@ -271,6 +271,8 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
                 storageAccountName, partitionKey, rowKey, headers, merge);
 
             response.StatusCode = HttpStatusCode.NoContent;
+            RecordTableMutation(merge ? "merge" : "replace", subscriptionIdentifier, resourceGroupIdentifier,
+                tableName, storageAccountName, partitionKey, rowKey, headers, response);
         }
         catch (EntityNotFoundException) when (upsert)
         {
@@ -279,6 +281,8 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
             DataPlane.UpsertEntity(buffered, subscriptionIdentifier, resourceGroupIdentifier, tableName,
                 storageAccountName, partitionKey, rowKey);
             response.StatusCode = HttpStatusCode.NoContent;
+            RecordTableMutation("upsert", subscriptionIdentifier, resourceGroupIdentifier,
+                tableName, storageAccountName, partitionKey, rowKey, headers, response);
         }
         catch (EntityNotFoundException)
         {
@@ -297,5 +301,46 @@ internal abstract class TableDataPlaneEndpointBase(Pipeline eventPipeline, ITopa
             response.Headers.Add("x-ms-error-code", "UpdateConditionNotSatisfied");
             response.Content = JsonContent.Create(error);
         }
+    }
+
+    // Trace a table mutation to the OTel span file: the etag now in storage and whether the response carried an
+    // ETag header (Azure returns it on merge/update so the SDK can refresh its in-memory entity; a missing header
+    // leaves the caller's cached etag stale). Opt-in via TOPAZ_TABLE_TRACE_FILTER (substring match on table name)
+    // to bound the read-back overhead. Backend-agnostic. No-op unless tracing is on and the filter matches.
+    private void RecordTableMutation(string op, SubscriptionIdentifier subscriptionIdentifier,
+        ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName,
+        string partitionKey, string rowKey, IHeaderDictionary headers, HttpResponseMessage response)
+    {
+        var filter = Environment.GetEnvironmentVariable("TOPAZ_TABLE_TRACE_FILTER");
+        if (!StorageTracing.IsEnabled || string.IsNullOrEmpty(filter) ||
+            tableName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            return;
+        }
+
+        string? storedEtag = null;
+        try
+        {
+            var body = DataPlane.GetEntity(subscriptionIdentifier, resourceGroupIdentifier, tableName,
+                storageAccountName, partitionKey, rowKey);
+            storedEtag = System.Text.Json.Nodes.JsonNode.Parse(body)?["odata.etag"]?.GetValue<string>();
+        }
+        catch
+        {
+            // best-effort read-back for tracing only
+        }
+
+        // CTF EXPERIMENT (TOPAZ_ETAG_HEADER_EXPERIMENT=1, default off): return the new ETag response header that
+        // real Azure Table emits on merge/update, so the Azure Table SDK refreshes the caller's in-memory entity
+        // etag. Hypothesis: without it, the job sequencer's dispatch definition stays stale and the multi-region
+        // sequencer inconsistency check trips. Env-gated so it is NOT a permanent fix - a controlled probe.
+        if (storedEtag is not null &&
+            Environment.GetEnvironmentVariable("TOPAZ_ETAG_HEADER_EXPERIMENT") == "1")
+        {
+            try { response.Headers.ETag = System.Net.Http.Headers.EntityTagHeaderValue.Parse(storedEtag); } catch { }
+        }
+
+        StorageTracing.RecordTableOp(op, tableName, partitionKey, rowKey, storedEtag,
+            response.Headers.ETag is not null, headers["traceparent"].FirstOrDefault());
     }
 }

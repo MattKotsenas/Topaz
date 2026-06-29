@@ -152,6 +152,62 @@ internal static class TopazDiagnostics
         }
     }
 
+    /// <summary>
+    /// Records a table-entity storage operation as an OpenTelemetry-shaped span (op, row key, the etag now in
+    /// storage, and whether the HTTP response carried an ETag header). This makes the multi-region sequencer's
+    /// read/modify/write etag timeline visible in the same trace file as request spans - in particular whether a
+    /// mutation returns the new ETag header the Azure SDK needs to refresh its in-memory entity. Backend-agnostic
+    /// (called from the shared endpoint layer), so it traces identically for file- and SQLite-backed storage.
+    /// No-op unless tracing is enabled.
+    /// </summary>
+    public static void RecordTableOp(
+        string op,
+        string table,
+        string partitionKey,
+        string rowKey,
+        string? storedEtag,
+        bool responseHadEtag,
+        string? traceParent = null)
+    {
+        var writer = s_active;
+        if (writer is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var record = new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["t"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["name"] = "TableOp:" + op,
+                ["status"] = "Ok",
+                ["topaz.table"] = table,
+                ["topaz.table.op"] = op,
+                ["topaz.table.partition_key"] = partitionKey,
+                ["topaz.table.row_key"] = rowKey,
+                ["topaz.table.stored_etag"] = storedEtag ?? "(none)",
+                ["topaz.table.response_had_etag"] = responseHadEtag,
+            };
+
+            if (TryParseTraceParent(traceParent, out var traceId, out var parentSpanId))
+            {
+                record["traceId"] = traceId;
+                record["spanId"] = CreateSpanId();
+                record["parentSpanId"] = parentSpanId;
+            }
+
+            writer.Enqueue(JsonSerializer.Serialize(record));
+        }
+        catch (Exception ex)
+        {
+            if (Interlocked.CompareExchange(ref s_recordFailureReported, 1, 0) == 0)
+            {
+                Console.Error.WriteLine("[topaz-otel] table-op recording failed (further failures suppressed): " + ex.Message);
+            }
+        }
+    }
+
     private static bool TryParseTraceParent(string? traceParent, out string traceId, out string parentSpanId)
     {
         traceId = string.Empty;
