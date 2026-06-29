@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Topaz.Service.Storage.Exceptions;
 using Topaz.Service.Storage.Models;
 using Topaz.Service.Storage.OData;
+using Topaz.Service.Storage.Persistence;
 using Topaz.Shared;
 using Microsoft.AspNetCore.Http;
 using Azure;
@@ -14,56 +15,18 @@ namespace Topaz.Service.Storage;
 
 internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvider, ITopazLogger logger)
 {
+    private readonly ITableEntityStore _store = SqliteTableEntityStore.Default;
+
     internal string InsertEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
         ResourceGroupIdentifier resourceGroupIdentifier, string tableName, string storageAccountName)
     {
         logger.LogDebug(nameof(TableServiceDataPlane), nameof(InsertEntity), "Executing {0}: {1} {2}", nameof(InsertEntity), tableName, storageAccountName);
 
-        var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
-
+        var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
         using var sr = new StreamReader(input);
-
         var rawContent = sr.ReadToEnd();
         var metadata = JsonSerializer.Deserialize<GenericTableEntity>(rawContent, GlobalSettings.JsonOptions) ?? throw new Exception();
-
-        logger.LogDebug(nameof(TableServiceDataPlane), nameof(InsertEntity), "Executing {0}: Inserting {1}.", nameof(InsertEntity), rawContent);
-
-        var safePartitionKey = PathGuard.SanitizeName(metadata.PartitionKey!);
-        var safeRowKey = PathGuard.SanitizeName(metadata.RowKey!);
-
-        var etag = new ETag(DateTimeOffset.Now.Ticks.ToString());
-        var timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
-        var fileName = $"{safePartitionKey}_{safeRowKey}.json";
-        var entityPath = Path.Combine(path, fileName);
-        PathGuard.EnsureWithinDirectory(entityPath, path);
-
-        if(File.Exists(entityPath))
-        {
-            // Duplicated entry
-            logger.LogDebug(nameof(TableServiceDataPlane), nameof(InsertEntity), "Executing {0}: Duplicated entry.", nameof(InsertEntity));
-            throw new EntityAlreadyExistsException();
-        } 
-
-        var root = JsonNode.Parse(rawContent);
-        root!["Timestamp"] = timestamp;
-        root!["odata.etag"] = etag.ToString("H");
-
-        var data = root.ToJsonString();
-
-        lock (EntityLock(entityPath))
-        {
-            // Re-check existence under the lock so a concurrent insert cannot slip between the check
-            // above and the write below.
-            if (File.Exists(entityPath))
-            {
-                logger.LogDebug(nameof(TableServiceDataPlane), nameof(InsertEntity), "Executing {0}: Duplicated entry.", nameof(InsertEntity));
-                throw new EntityAlreadyExistsException();
-            }
-
-            AtomicFile.WriteAllText(entityPath, data);
-        }
-
-        return rawContent;
+        return _store.Insert(scope, metadata.PartitionKey!, metadata.RowKey!, rawContent);
     }
 
     internal string GetEntity(SubscriptionIdentifier subscriptionIdentifier,
@@ -75,27 +38,8 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         PathGuard.ValidateName(partitionKey);
         PathGuard.ValidateName(rowKey);
 
-        var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
-
-        var fileName = $"{PathGuard.SanitizeName(partitionKey)}_{PathGuard.SanitizeName(rowKey)}.json";
-        var entityPath = Path.Combine(path, fileName);
-        PathGuard.EnsureWithinDirectory(entityPath, path);
-
-        if (!File.Exists(entityPath))
-        {
-            throw new EntityNotFoundException();
-        }
-
-        lock (EntityLock(entityPath))
-        {
-            // Re-check under the lock: a concurrent delete may have removed it after the check above.
-            if (!File.Exists(entityPath))
-            {
-                throw new EntityNotFoundException();
-            }
-
-            return File.ReadAllText(entityPath);
-        }
+        var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
+        return _store.Get(scope, partitionKey, rowKey) ?? throw new EntityNotFoundException();
     }
 
     internal TableQueryResult QueryEntities(QueryString query, SubscriptionIdentifier subscriptionIdentifier,
@@ -105,23 +49,11 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
 
         var options = TableODataQueryOptions.Parse(query);
 
-        var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
+        var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
 
-        // Load all entities from disk as JsonObject so we can inspect individual properties.
-        var allEntities = Directory.EnumerateFiles(path, "*.json")
-            .Select(file =>
-            {
-                // Lock the individual entity file so the read never overlaps a writer's rewrite, and
-                // tolerate a concurrent delete between enumeration and read (the file is simply gone).
-                string? content = null;
-                lock (EntityLock(file))
-                {
-                    if (File.Exists(file))
-                        content = File.ReadAllText(file);
-                }
-
-                return content is null ? null : JsonSerializer.Deserialize<JsonObject>(content, GlobalSettings.JsonOptions);
-            })
+        // The store returns committed entity bodies ordered by (PartitionKey, RowKey); parse for filtering/paging.
+        var allEntities = _store.List(scope)
+            .Select(body => JsonSerializer.Deserialize<JsonObject>(body, GlobalSettings.JsonOptions))
             .Where(e => e is not null)
             .Select(e => e!)
             .ToList();
@@ -220,74 +152,8 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         PathGuard.ValidateName(partitionKey);
         PathGuard.ValidateName(rowKey);
 
-        var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
-
-        var fileName = $"{PathGuard.SanitizeName(partitionKey)}_{PathGuard.SanitizeName(rowKey)}.json";
-        var entityPath = Path.Combine(path, fileName);
-        PathGuard.EnsureWithinDirectory(entityPath, path);
-
-        if (!File.Exists(entityPath))
-        {
-            logger.LogDebug(nameof(TableServiceDataPlane), nameof(DeleteEntity), "Executing {0}: Entity not found.", nameof(DeleteEntity));
-            throw new EntityNotFoundException();
-        }
-
-        lock (EntityLock(entityPath))
-        {
-            if (!File.Exists(entityPath))
-            {
-                logger.LogDebug(nameof(TableServiceDataPlane), nameof(DeleteEntity), "Executing {0}: Entity not found.", nameof(DeleteEntity));
-                throw new EntityNotFoundException();
-            }
-
-            if (etag != "*")
-            {
-                var node = JsonNode.Parse(File.ReadAllText(entityPath));
-                if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
-                    throw new UpdateConditionNotSatisfiedException();
-            }
-
-            File.Delete(entityPath);
-        }
-    }
-
-    // Decide whether an If-Match precondition is satisfied for a stored entity. Two etag shapes occur:
-    //  1. The stored odata.etag (ETag.ToString("H") => "\"<ticks>\"") - matched directly (quote/weak-prefix
-    //     insensitive).
-    //  2. The legacy Cosmos.Table SDK derives the conditional etag from the entity TIMESTAMP, not odata.etag,
-    //     sending If-Match: W/"datetime'<url-encoded-timestamp>'" (classic Table Storage protocol). Match that
-    //     against the stored Timestamp. Without this, a conditional merge/update against an existing entity
-    //     always 412s because the SDK's timestamp-etag never equals the ticks-based odata.etag.
-    private static bool EtagMatches(string ifMatch, string? storedEtag, string? storedTimestamp)
-    {
-        if (string.IsNullOrEmpty(ifMatch)) return false;
-        if (NormalizeETag(storedEtag) == NormalizeETag(ifMatch)) return true;
-
-        var marker = "datetime'";
-        var idx = ifMatch.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0 && !string.IsNullOrEmpty(storedTimestamp))
-        {
-            var start = idx + marker.Length;
-            var end = ifMatch.IndexOf('\'', start);
-            if (end > start)
-            {
-                var decoded = Uri.UnescapeDataString(ifMatch.Substring(start, end - start));
-                if (string.Equals(decoded, storedTimestamp, StringComparison.Ordinal)) return true;
-                if (DateTimeOffset.TryParse(decoded, out var a) &&
-                    DateTimeOffset.TryParse(storedTimestamp, out var b) &&
-                    a.UtcDateTime == b.UtcDateTime) return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static string NormalizeETag(string? etag)
-    {
-        if (string.IsNullOrEmpty(etag)) return string.Empty;
-        var e = etag!.Trim();
-        if (e.StartsWith("W/", StringComparison.Ordinal)) e = e.Substring(2);
-        return e.Trim('"');
+        var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
+        _store.Delete(scope, partitionKey, rowKey, etag);
     }
 
     internal void UpsertEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
@@ -299,25 +165,9 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         PathGuard.ValidateName(partitionKey);
         PathGuard.ValidateName(rowKey);
 
-        var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
-
+        var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
         using var sr = new StreamReader(input);
-        var rawContent = sr.ReadToEnd();
-
-        var fileName = $"{PathGuard.SanitizeName(partitionKey)}_{PathGuard.SanitizeName(rowKey)}.json";
-        var entityPath = Path.Combine(path, fileName);
-        PathGuard.EnsureWithinDirectory(entityPath, path);
-
-        var root = JsonNode.Parse(rawContent) ?? throw new Exception("Cannot parse entity body.");
-        root["PartitionKey"] = partitionKey;
-        root["RowKey"] = rowKey;
-        root["Timestamp"] = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
-        root["odata.etag"] = new ETag(DateTimeOffset.Now.Ticks.ToString()).ToString("H");
-
-        lock (EntityLock(entityPath))
-        {
-            AtomicFile.WriteAllText(entityPath, root.ToJsonString());
-        }
+        _store.Upsert(scope, partitionKey, rowKey, sr.ReadToEnd());
     }
 
     internal void UpdateEntity(Stream input, SubscriptionIdentifier subscriptionIdentifier,
@@ -329,88 +179,11 @@ internal sealed class TableServiceDataPlane(TableResourceProvider resourceProvid
         PathGuard.ValidateName(partitionKey);
         PathGuard.ValidateName(rowKey);
 
-        // Absent If-Match means an unconditional update (e.g. InsertOrMerge /
-        // InsertOrReplace, which send no precondition). Default to "*" so the
-        // etag check below is skipped, mirroring DeleteEntity. Without this an
-        // unconditional upsert against an *existing* entity wrongly 412s.
+        // Absent If-Match means an unconditional update (e.g. InsertOrMerge / InsertOrReplace, which send no
+        // precondition). "*" skips the precondition. Missing entity throws EntityNotFound so upsert callers retry.
         var etag = headers["If-Match"].FirstOrDefault() ?? "*";
-        var path = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
-
+        var scope = resourceProvider.GetTableDataPath(subscriptionIdentifier, resourceGroupIdentifier, tableName, storageAccountName);
         using var sr = new StreamReader(input, leaveOpen: true);
-
-        var rawContent = sr.ReadToEnd();
-
-        var fileName = $"{PathGuard.SanitizeName(partitionKey)}_{PathGuard.SanitizeName(rowKey)}.json";
-        var entityPath = Path.Combine(path, fileName);
-        PathGuard.EnsureWithinDirectory(entityPath, path);
-
-        if(File.Exists(entityPath) == false)
-        {
-            // Not existing entry — for upsert callers, the stream is left open so they can retry via UpsertEntity.
-            logger.LogDebug(nameof(TableServiceDataPlane), nameof(UpdateEntity), "Executing {0}: Not existing entry.", nameof(UpdateEntity));
-            throw new EntityNotFoundException();
-        }
-
-        // The whole read-modify-write runs under the per-entity lock so a reader never sees the file
-        // mid-rewrite (empty/partial JSON) and two conditional updates cannot both pass the etag check
-        // before either writes (the second now correctly 412s). Those races surfaced as intermittent
-        // 500s when a high-frequency writer (a fast job poll) overlapped a reader of the same entity.
-        lock (EntityLock(entityPath))
-        {
-            if (File.Exists(entityPath) == false)
-            {
-                logger.LogDebug(nameof(TableServiceDataPlane), nameof(UpdateEntity), "Executing {0}: Not existing entry.", nameof(UpdateEntity));
-                throw new EntityNotFoundException();
-            }
-
-            var existingJson = File.ReadAllText(entityPath);
-
-            if (etag != "*")
-            {
-                var node = JsonNode.Parse(existingJson);
-                if (!EtagMatches(etag, node?["odata.etag"]?.GetValue<string>(), node?["Timestamp"]?.GetValue<string>()))
-                    throw new UpdateConditionNotSatisfiedException();
-            }
-
-            var root = JsonNode.Parse(rawContent)!.AsObject();
-
-            // Merge Entity (MERGE / PATCH / InsertOrMerge) overlays the request's properties
-            // onto the stored entity and PRESERVES stored properties the request omitted.
-            // A plain replace (the Update/Replace and InsertOrReplace path) drops every
-            // property absent from a partial merge body, silently nulling fields the caller
-            // never intended to clear.
-            if (merge && JsonNode.Parse(existingJson) is JsonObject existing)
-            {
-                foreach (var property in root)
-                    existing[property.Key] = property.Value?.DeepClone();
-                root = existing;
-            }
-
-            var newEtag = new ETag(DateTimeOffset.Now.Ticks.ToString());
-            var timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
-
-            // The entity keys are authoritative from the request URL; an update/merge body
-            // may omit them (they are not required in the payload). Persist them so the
-            // stored entity always carries PartitionKey/RowKey - otherwise a later query
-            // returns a keyless entity and SDK entity resolvers dereference a null RowKey.
-            root["PartitionKey"] = partitionKey;
-            root["RowKey"] = rowKey;
-            root["Timestamp"] = timestamp;
-            root["odata.etag"] = newEtag.ToString("H");
-
-            AtomicFile.WriteAllText(entityPath, root.ToJsonString());
-        }
+        _store.Update(scope, partitionKey, rowKey, sr.ReadToEnd(), etag, merge);
     }
-
-    // Per-entity-file lock. The data plane is file-backed and is instantiated per request, so a STATIC,
-    // entity-path-keyed lock is what actually serialises concurrent access to a given entity across all
-    // requests in this (single) process. Held across each read-modify-write (and across reads), it stops
-    // a reader from observing a file mid-rewrite or in a delete-then-write gap - the torn/missing reads
-    // that surfaced as intermittent 500s under a fast writer overlapping a reader of the same entity -
-    // and gives conditional updates real read-check-write atomicity. Lock objects are keyed by the
-    // normalised full path; the set is bounded by the number of distinct entities touched.
-    private static readonly ConcurrentDictionary<string, object> EntityLocks = new(StringComparer.Ordinal);
-
-    private static object EntityLock(string entityPath)
-        => EntityLocks.GetOrAdd(Path.GetFullPath(entityPath), static _ => new object());
 }
