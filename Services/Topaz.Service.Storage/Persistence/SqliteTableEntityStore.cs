@@ -285,12 +285,23 @@ internal sealed class SqliteTableEntityStore : ITableEntityStore
         cmd.ExecuteNonQuery();
     }
 
-    // Stamp the server-authoritative keys, Timestamp and a strictly-monotonic ticks ETag onto the body.
+    // Stamp the server-authoritative keys, a monotonic Timestamp, and the matching Azure-format weak ETag onto the
+    // body. Azure Table derives the ETag FROM the entity Timestamp - W/"datetime'<url-encoded Timestamp>'" - and
+    // reports that one value identically on every surface: the write-response ETag header, a $batch sub-response ETag,
+    // and the odata.etag in a GET/query body. A consumer doing read-modify-write (compare the ETag a write returned to
+    // the odata.etag a later read returns) depends on those being byte-identical. Topaz previously stamped a bare
+    // monotonic-ticks ETag ("<ticks>") on the stored body while the $batch INSERT path synthesized the Azure
+    // W/"datetime'...'" form from the Timestamp - two different strings for the same write - so a distributed job
+    // sequencer's optimistic-concurrency check (snapshot ETag vs. re-read odata.etag) NEVER matched and churned
+    // forever. Deriving the single Azure-format value here makes INSERT, MERGE/REPLACE and GET agree. The Timestamp is
+    // advanced to a strictly-increasing tick (UtcNow, or previous+1 when writes land in the same tick) so the derived
+    // ETag stays unique for optimistic concurrency.
     private static string Stamp(string bodyJson, string pk, string rk, out string ts, out string etag)
     {
         var root = JsonNode.Parse(bodyJson)!.AsObject();
-        ts = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'");
-        etag = NextEtag();
+        var ticks = NextTimestampTicks();
+        ts = new DateTime(ticks, DateTimeKind.Utc).ToString("yyyy-MM-ddTHH:mm:ss.fffffff'Z'");
+        etag = "W/\"datetime'" + Uri.EscapeDataString(ts) + "'\"";
         root["PartitionKey"] = pk;
         root["RowKey"] = rk;
         root["Timestamp"] = ts;
@@ -298,7 +309,7 @@ internal sealed class SqliteTableEntityStore : ITableEntityStore
         return root.ToJsonString();
     }
 
-    private static string NextEtag()
+    private static long NextTimestampTicks()
     {
         long ticks;
         long previous;
@@ -308,6 +319,6 @@ internal sealed class SqliteTableEntityStore : ITableEntityStore
             ticks = Math.Max(DateTimeOffset.UtcNow.Ticks, previous + 1);
         }
         while (Interlocked.CompareExchange(ref _lastEtagTicks, ticks, previous) != previous);
-        return "\"" + ticks + "\"";
+        return ticks;
     }
 }

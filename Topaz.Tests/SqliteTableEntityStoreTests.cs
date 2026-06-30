@@ -55,14 +55,53 @@ public class SqliteTableEntityStoreTests
     }
 
     [Test]
-    public void Etags_are_strictly_monotonic_across_writes()
+    public void Etags_are_azure_format_derived_from_timestamp_and_strictly_monotonic()
     {
-        long Etag(string b) => long.Parse(JsonNode.Parse(b)!["odata.etag"]!.GetValue<string>().Trim('"'));
-        var e1 = Etag(_store.Upsert(Scope, "p", "r", "{}"));
-        var e2 = Etag(_store.Upsert(Scope, "p", "r", "{}"));
-        var e3 = Etag(_store.Upsert(Scope, "p", "r2", "{}"));
-        Assert.That(e2, Is.GreaterThan(e1));
-        Assert.That(e3, Is.GreaterThan(e2));
+        // Azure derives the weak ETag FROM the entity Timestamp - W/"datetime'<url-encoded Timestamp>'" - and reports
+        // that identical value as the odata.etag. Assert the round-trip (so a write-response ETag and a query
+        // odata.etag for the same write are byte-identical, which a distributed sequencer's optimistic concurrency
+        // relies on) and that the Timestamps strictly increase (so the derived ETags stay unique).
+        static (string etag, string ts) Stamp(string b)
+        {
+            var node = JsonNode.Parse(b)!;
+            var etag = node["odata.etag"]!.GetValue<string>();
+            var ts = node["Timestamp"]!.GetValue<string>();
+            Assert.That(etag, Is.EqualTo("W/\"datetime'" + Uri.EscapeDataString(ts) + "'\""),
+                "ETag must be the Azure weak-ETag form derived from the entity Timestamp");
+            return (etag, ts);
+        }
+
+        var s1 = Stamp(_store.Upsert(Scope, "p", "r", "{}"));
+        var s2 = Stamp(_store.Upsert(Scope, "p", "r", "{}"));
+        var s3 = Stamp(_store.Upsert(Scope, "p", "r2", "{}"));
+
+        // Fixed-width monotonic Timestamps compare ordinally; strictly increasing => the derived ETags are unique.
+        Assert.That(string.CompareOrdinal(s2.ts, s1.ts), Is.GreaterThan(0));
+        Assert.That(string.CompareOrdinal(s3.ts, s2.ts), Is.GreaterThan(0));
+        Assert.That(s2.etag, Is.Not.EqualTo(s1.etag));
+        Assert.That(s3.etag, Is.Not.EqualTo(s2.etag));
+    }
+
+    [Test]
+    public void Batch_insert_subresponse_etag_matches_a_subsequent_read()
+    {
+        // The $batch INSERT sub-response sends the ETag the legacy SDK derives from the entity Timestamp
+        // (W/"datetime'<url-encoded Timestamp>'"); a distributed sequencer snapshots THAT and later re-reads the
+        // row's odata.etag. They must be byte-identical or the optimistic-concurrency check churns forever (the W4
+        // multi-region stall). Topaz used to stamp a "<ticks>" odata.etag while the insert path synthesized the
+        // W/datetime form - two different strings for one write.
+        var insertResult = _store.ExecuteBatch(new[] { Insert("p", "a", "{\"V\":1}") });
+        var insertedBody = _store.Get(Scope, "p", "a")!;
+        var timestamp = JsonNode.Parse(insertedBody)!["Timestamp"]!.GetValue<string>();
+        var laterReadEtag = JsonNode.Parse(insertedBody)!["odata.etag"]!.GetValue<string>();
+
+        // The exact ETag header the BatchEndpoint POST/insert path emits, derived from the stored Timestamp.
+        var insertSubResponseEtag = "W/\"datetime'" + Uri.EscapeDataString(timestamp) + "'\"";
+
+        Assert.That(insertResult[0].Etag, Is.EqualTo(laterReadEtag),
+            "the store's per-op insert etag must equal the stored odata.etag");
+        Assert.That(insertSubResponseEtag, Is.EqualTo(laterReadEtag),
+            "the $batch INSERT sub-response etag (derived from Timestamp) must equal a later GET's odata.etag");
     }
 
     [Test]
