@@ -243,9 +243,21 @@ internal sealed class BatchEndpoint(Pipeline eventPipeline, ITopazLogger logger)
                 }
                 break;
 
-            default: // PUT / MERGE / PATCH / DELETE
+            case "DELETE":
+                // A batched delete returns 204 with no ETag - the entity is gone.
                 sb.Append("HTTP/1.1 204 No Content\r\n");
                 sb.Append("Content-ID: ").Append(op.ContentId ?? "0").Append("\r\n");
+                sb.Append("DataServiceVersion: 3.0;\r\n\r\n");
+                break;
+
+            default: // PUT / MERGE / PATCH
+                // Azure returns 204 WITH the new entity ETag on a batched update; the legacy Table SDK uses it to
+                // refresh the in-memory entity ETag (and thus the If-Match it sends on the next conditional write).
+                // Omitting it leaves a $batch-scheduled successor's ETag stale, so the scheduler's next optimistic
+                // write cannot arbitrate. Use the stored odata.etag so it matches a later GET of the same row.
+                sb.Append("HTTP/1.1 204 No Content\r\n");
+                sb.Append("Content-ID: ").Append(op.ContentId ?? "0").Append("\r\n");
+                if (!string.IsNullOrEmpty(result.Etag)) sb.Append("ETag: ").Append(result.Etag).Append("\r\n");
                 sb.Append("DataServiceVersion: 3.0;\r\n\r\n");
                 break;
         }

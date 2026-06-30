@@ -136,6 +136,22 @@ public class SqliteTableEntityStoreTests
     }
 
     [Test]
+    public void Batch_update_returns_the_new_etag_matching_a_subsequent_read()
+    {
+        var inserted = JsonNode.Parse(_store.Insert(Scope, "p", "a", "{\"V\":1}"))!["odata.etag"]!.GetValue<string>();
+
+        var results = _store.ExecuteBatch(new[] { Merge("p", "a", "{\"V\":2}") });
+
+        Assert.That(results, Has.Count.EqualTo(1));
+        Assert.That(results[0].Etag, Is.Not.Null.And.Not.Empty.And.Not.EqualTo(inserted),
+            "a batched merge must return the NEW etag so the client can refresh its If-Match for the next write");
+        // The returned etag must equal what a later read reports - otherwise a scheduler that updates its in-memory
+        // snapshot from the batch response and then re-reads the row sees a spurious mismatch (the W4 stall).
+        var stored = JsonNode.Parse(_store.Get(Scope, "p", "a")!)!["odata.etag"]!.GetValue<string>();
+        Assert.That(results[0].Etag, Is.EqualTo(stored));
+    }
+
+    [Test]
     public void Batch_rolls_back_every_operation_when_a_later_op_fails_its_precondition()
     {
         _store.Insert(Scope, "p", "a", "{\"V\":1}");
