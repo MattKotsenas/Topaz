@@ -58,19 +58,11 @@ internal sealed class GetBlobEndpoint(Pipeline eventPipeline, ITopazLogger logge
 
             response.StatusCode = HttpStatusCode.OK;
 
-            byte[] bytes;
-            if (props.Resource?.BlobType == "PageBlob")
-            {
-                var binaryOp = _dataPlane.GetBlobBytes(subscriptionIdentifier, resourceGroupIdentifier,
-                    storageAccount!.Name, context.Request.Path.Value!);
-                bytes = binaryOp.Resource ?? [];
-            }
-            else
-            {
-                var textOp = _dataPlane.GetBlob(subscriptionIdentifier, resourceGroupIdentifier,
-                    storageAccount!.Name, context.Request.Path.Value!);
-                bytes = textOp.Resource != null ? System.Text.Encoding.UTF8.GetBytes(textOp.Resource) : [];
-            }
+            // All blob content is stored as raw bytes (block + page), so read bytes for every
+            // blob type - the old text path corrupted binary block blobs via UTF-8 decoding.
+            var contentOp = _dataPlane.GetBlobBytes(subscriptionIdentifier, resourceGroupIdentifier,
+                storageAccount!.Name, context.Request.Path.Value!);
+            byte[] bytes = contentOp.Resource ?? [];
 
             string? contentRangeHeader = null;
             if (TryGetRequestedRange(context.Request.Headers, bytes.Length, out var startByte, out var endByte))

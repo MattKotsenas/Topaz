@@ -5,6 +5,7 @@ using Azure.ResourceManager.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
+using System.IO.Compression;
 using Topaz.Identity;
 using Topaz.ResourceManager;
 using Topaz.Shared;
@@ -145,6 +146,43 @@ public class BlobStorageTests
 
         // Assert
         Assert.That(blobs, Has.Length.EqualTo(1));
+    }
+
+    [Test]
+    public async Task BlobStorageTests_WhenBinaryZipBlobIsUploaded_ItRoundTripsWithoutCorruption()
+    {
+        // A zip is a representative binary payload. Its local/central directory records and
+        // compressed bytes include byte values >= 0x80 that block-blob storage must preserve
+        // exactly; decoding block content through a UTF-8 string corrupts them.
+        var serviceClient = new BlobServiceClient(TopazResourceHelpers.GetAzureStorageConnectionString(StorageAccountName, _key));
+        serviceClient.CreateBlobContainer("binary");
+        var containerClient = serviceClient.GetBlobContainerClient("binary");
+        var blobClient = containerClient.GetBlobClient("payload.zip");
+
+        byte[] original;
+        using (var ms = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+            using (var writer = new StreamWriter(zip.CreateEntry("run.sh").Open()))
+            {
+                writer.Write("#!/bin/bash\necho ok\nexit 0\n");
+            }
+
+            original = ms.ToArray();
+        }
+
+        // Precondition: the payload really is binary (has bytes the UTF-8 path would mangle).
+        Assert.That(original, Has.Some.GreaterThanOrEqualTo((byte)0x80),
+            "precondition: the test payload must contain high bytes");
+
+        // Act
+        await blobClient.UploadAsync(new BinaryData(original), overwrite: true);
+        var downloaded = (await blobClient.DownloadContentAsync()).Value.Content.ToArray();
+
+        // Assert: byte-for-byte round trip, and still a valid zip.
+        Assert.That(downloaded, Is.EqualTo(original), "binary blob content must round-trip byte-for-byte");
+        using var check = new ZipArchive(new MemoryStream(downloaded), ZipArchiveMode.Read);
+        Assert.That(check.Entries.Select(e => e.Name), Does.Contain("run.sh"));
     }
 
     [Test]

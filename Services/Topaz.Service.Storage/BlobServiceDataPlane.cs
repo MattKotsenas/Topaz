@@ -105,19 +105,22 @@ internal sealed class BlobServiceDataPlane(BlobServiceControlPlane controlPlane,
         }
         else
         {
-            using var sr = new StreamReader(input);
-            var rawContent = sr.ReadToEnd();
+            using var contentStream = new MemoryStream();
+            input.CopyTo(contentStream);
+            var contentBytes = contentStream.ToArray();
 
             var metadata = new BlobProperties(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
             {
                 Name = blobName,
                 ETag = new ETag(DateTimeOffset.Now.Ticks.ToString()),
-                ContentLength = System.Text.Encoding.UTF8.GetByteCount(rawContent),
+                ContentLength = contentBytes.Length,
                 ContentType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,
             };
 
             File.WriteAllText(GetBlobPropertiesPath(subscriptionIdentifier, resourceGroupIdentifier, storageAccountName, blobPath), JsonSerializer.Serialize(metadata));
-            File.WriteAllText(fullPath, rawContent);
+            // Store raw bytes (like the PageBlob path). Decoding block-blob content through a
+            // UTF-8 string corrupts binary payloads (e.g. zip archives).
+            File.WriteAllBytes(fullPath, contentBytes);
 
             return new DataPlaneOperationResult<BlobProperties>(OperationResult.Created, metadata, null, null);
         }
@@ -341,8 +344,9 @@ internal sealed class BlobServiceDataPlane(BlobServiceControlPlane controlPlane,
         logger.LogDebug(nameof(BlobServiceDataPlane), nameof(PutBlock),
             "Executing {0}: {1} {2} blockId={3}", nameof(PutBlock), storageAccountName, blobPath, blockId);
 
-        using var sr = new StreamReader(input);
-        var rawContent = sr.ReadToEnd();
+        using var blockStream = new MemoryStream();
+        input.CopyTo(blockStream);
+        var blockBytes = blockStream.ToArray();
 
         var containerName = GetContainerNameFromBlobPath(blobPath);
         var blobSubpathKey = GetBlobSubpathKey(blobPath);
@@ -354,7 +358,8 @@ internal sealed class BlobServiceDataPlane(BlobServiceControlPlane controlPlane,
         if (!Directory.Exists(stagingDir))
             Directory.CreateDirectory(stagingDir);
 
-        File.WriteAllText(Path.Combine(stagingDir, safeBlockId), rawContent);
+        // Stage raw bytes so binary block content survives the later PutBlockList assembly.
+        File.WriteAllBytes(Path.Combine(stagingDir, safeBlockId), blockBytes);
         // Persist original block ID for GetBlockList (safeBlockId may differ due to +/→-/_ substitutions)
         File.WriteAllText(Path.Combine(stagingDir, safeBlockId + ".meta"), blockId);
 
@@ -389,7 +394,7 @@ internal sealed class BlobServiceDataPlane(BlobServiceControlPlane controlPlane,
         var stagingDir = controlPlane.GetBlobBlocksStagingPath(subscriptionIdentifier, resourceGroupIdentifier,
             storageAccountName, containerName, blobSubpathKey);
 
-        var parts = new List<string>(blockIds.Count);
+        var parts = new List<byte[]>(blockIds.Count);
         foreach (var blockId in blockIds)
         {
             var safeBlockId = blockId.Replace("/", "_").Replace("+", "-");
@@ -400,10 +405,16 @@ internal sealed class BlobServiceDataPlane(BlobServiceControlPlane controlPlane,
                 return new DataPlaneOperationResult<BlobProperties>(OperationResult.BadRequest, null, $"Staged block '{blockId}' not found.", "InvalidBlockList");
             }
 
-            parts.Add(File.ReadAllText(blockFile));
+            parts.Add(File.ReadAllBytes(blockFile));
         }
 
-        var assembled = string.Concat(parts);
+        using var assembledStream = new MemoryStream();
+        foreach (var part in parts)
+        {
+            assembledStream.Write(part, 0, part.Length);
+        }
+
+        var assembled = assembledStream.ToArray();
         var fullPath = GetBlobPath(subscriptionIdentifier, resourceGroupIdentifier, storageAccountName, blobPath);
         var blobDirectory = Path.GetDirectoryName(fullPath);
 
@@ -420,17 +431,18 @@ internal sealed class BlobServiceDataPlane(BlobServiceControlPlane controlPlane,
         {
             Name = blobName,
             ETag = new ETag(DateTimeOffset.UtcNow.Ticks.ToString()),
-            ContentLength = System.Text.Encoding.UTF8.GetByteCount(assembled),
+            ContentLength = assembled.Length,
             ContentType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,
         };
 
         File.WriteAllText(GetBlobPropertiesPath(subscriptionIdentifier, resourceGroupIdentifier, storageAccountName, blobPath),
             JsonSerializer.Serialize(metadata));
-        File.WriteAllText(fullPath, assembled);
+        // Store the assembled raw bytes so binary block blobs (e.g. zips) survive intact.
+        File.WriteAllBytes(fullPath, assembled);
 
         // Persist committed block list for GetBlockList before deleting the staging dir.
         var committedBlocks = blockIds
-            .Zip(parts, (id, content) => new BlockRecord(id, System.Text.Encoding.UTF8.GetByteCount(content)))
+            .Zip(parts, (id, content) => new BlockRecord(id, content.Length))
             .ToList();
         File.WriteAllText(
             GetCommittedBlocksPath(subscriptionIdentifier, resourceGroupIdentifier, storageAccountName, blobPath),
@@ -595,27 +607,13 @@ internal sealed class BlobServiceDataPlane(BlobServiceControlPlane controlPlane,
                     var safeBlockId = Path.GetFileName(contentFile);
                     var metaPath = contentFile + ".meta";
                     var originalId = File.Exists(metaPath) ? File.ReadAllText(metaPath).Trim() : safeBlockId;
-                    var size = (long)System.Text.Encoding.UTF8.GetByteCount(File.ReadAllText(contentFile));
+                    var size = new FileInfo(contentFile).Length;
                     uncommitted.Add(new BlockRecord(originalId, size));
                 }
             }
         }
 
         return new DataPlaneOperationResult<BlockListData>(OperationResult.Success, new BlockListData(committed, uncommitted), null, null);
-    }
-
-    public DataPlaneOperationResult<string> GetBlob(SubscriptionIdentifier subscriptionIdentifier,
-        ResourceGroupIdentifier resourceGroupIdentifier, string storageAccountName, string blobPath)
-    {
-        logger.LogDebug(nameof(BlobServiceDataPlane), nameof(GetBlob), "Executing {0}: {1} {2}", nameof(GetBlob),
-            storageAccountName, blobPath);
-
-        var fullPath = GetBlobPath(subscriptionIdentifier, resourceGroupIdentifier, storageAccountName, blobPath);
-
-        if (!File.Exists(fullPath))
-            return new DataPlaneOperationResult<string>(OperationResult.NotFound, null, null, null);
-
-        return new DataPlaneOperationResult<string>(OperationResult.Success, File.ReadAllText(fullPath), null, null);
     }
 
     public DataPlaneOperationResult<CopyBlobData> CopyBlob(
