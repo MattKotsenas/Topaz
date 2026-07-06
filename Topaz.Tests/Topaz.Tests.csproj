@@ -40,6 +40,7 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="FsCheck" Version="3.3.3" />
     <PackageReference Include="coverlet.collector" Version="10.0.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -55,6 +56,7 @@
     <ProjectReference Include="../Services/Topaz.Service.KeyVault/Topaz.Service.KeyVault.csproj" />
     <ProjectReference Include="../Topaz.Identity/Topaz.Identity.csproj" />
     <ProjectReference Include="../Topaz.ResourceManager/Topaz.ResourceManager.csproj" />
+    <ProjectReference Include="../Services/Topaz.Service.Storage/Topaz.Service.Storage.csproj" />
   </ItemGroup>
 
   <ItemGroup>
