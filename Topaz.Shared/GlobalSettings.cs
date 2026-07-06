@@ -49,6 +49,15 @@ public static class GlobalSettings
     // service port range (1–1023) and unlikely to conflict with common development tools.
     // Follows the same port-constant convention as the other Topaz ports (8887–8899).
     public const ushort ConnectProxyPort = 44380;
+    // Optional storage front-door endpoint for resolving deployment templateLinks over the network. When
+    // TOPAZ_ARTIFACT_FETCH_ENDPOINT is set to an absolute URL, a deployment's linked template blob is fetched
+    // over HTTP from this endpoint (carrying the link's original account Host) instead of read off the local
+    // storage disk - so a deployment whose template lives in an external storage backend still resolves.
+    // Unset => the local-disk reader is used (the in-process storage backend serves the blob itself).
+    public static readonly Uri? ArtifactFetchEndpoint =
+        Uri.TryCreate(Environment.GetEnvironmentVariable("TOPAZ_ARTIFACT_FETCH_ENDPOINT"), UriKind.Absolute, out var artifactFetchEndpoint)
+            ? artifactFetchEndpoint
+            : null;
     public const string TopazHostname = "topaz.local.dev";
     public const string MainEmulatorDirectory = ".topaz";
     public const string KeyVaultDnsSuffix = "vault.topaz.local.dev";
