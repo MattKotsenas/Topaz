@@ -21,6 +21,7 @@ internal sealed class AzureStorageControlPlane(
     ResourceGroupResourceProvider? resourceGroupProvider = null) : IControlPlane
 {
     private const string ResourceGroupNotFoundCode = "ResourceGroupNotFound";
+    private const string StorageAccountAlreadyTakenCode = "StorageAccountAlreadyTaken";
 
     public static AzureStorageControlPlane New(ITopazLogger logger)
     {
@@ -163,6 +164,18 @@ internal sealed class AzureStorageControlPlane(
                     $"Resource group '{resourceGroupIdentifier.Value}' could not be found.",
                     ResourceGroupNotFoundCode);
             }
+        }
+
+        // Storage account names are globally unique in Azure. If the name is already owned by an account in a
+        // different subscription/resource group, reject the create with a conflict rather than provisioning a
+        // second copy under this resource group (which left the account half-created on disk).
+        var globalNameOwner = GlobalDnsEntries.GetEntry(AzureStorageService.UniqueName, storageAccountName);
+        if (globalNameOwner is { } owner
+            && (owner.subscription != subscriptionIdentifier.Value
+                || !string.Equals(owner.resourceGroup, resourceGroupIdentifier.Value, StringComparison.OrdinalIgnoreCase)))
+        {
+            return new ControlPlaneOperationResult<StorageAccountResource>(OperationResult.Conflict, null,
+                $"The storage account named '{storageAccountName}' is already taken.", StorageAccountAlreadyTakenCode);
         }
 
         var existingAccount = provider.Get(subscriptionIdentifier, resourceGroupIdentifier, storageAccountName);

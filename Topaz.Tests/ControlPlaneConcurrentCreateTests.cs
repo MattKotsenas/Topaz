@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 
 using Topaz.ResourceManager;
+using Topaz.Service.Shared;
 using Topaz.Service.Shared.Domain;
 using Topaz.Service.Storage;
 using Topaz.Service.Storage.Models.Requests;
@@ -36,7 +37,8 @@ public sealed class ControlPlaneConcurrentCreateTests
         var resourceGroup = ResourceGroupIdentifier.From("concurrentcreaterg");
 
         const int instanceCount = 48;
-        var names = Enumerable.Range(0, instanceCount).Select(i => $"cca{i:D4}acct").ToArray();
+        var runId = Guid.NewGuid().ToString("N")[..6];
+        var names = Enumerable.Range(0, instanceCount).Select(i => $"cc{runId}{i:D2}").ToArray();
 
         var errors = new ConcurrentBag<Exception>();
         using var gate = new ManualResetEventSlim(false);
@@ -72,6 +74,46 @@ public sealed class ControlPlaneConcurrentCreateTests
                 Assert.That(File.Exists(Path.Combine(instancePath, "metadata.json")), Is.True, $"metadata.json missing for '{name}'");
                 Assert.That(File.Exists(Path.Combine(instancePath, "properties.xml")), Is.True, $"properties.xml missing for '{name}'");
             }
+        }
+        finally
+        {
+            var subscriptionRoot = Path.Combine(GlobalSettings.MainEmulatorDirectory, ".subscription", subscription.Value.ToString());
+            if (Directory.Exists(subscriptionRoot))
+            {
+                Directory.Delete(subscriptionRoot, recursive: true);
+            }
+        }
+    }
+
+    [Test]
+    public void Creating_a_storage_account_whose_global_name_is_taken_in_another_resource_group_is_rejected()
+    {
+        var logger = new SilentLogger();
+        GlobalDnsEntries.ConfigureLogger(logger);
+        var controlPlane = new AzureStorageControlPlane(new StorageResourceProvider(logger), logger);
+        var subscription = SubscriptionIdentifier.From(Guid.NewGuid());
+        var resourceGroupA = ResourceGroupIdentifier.From("xrgtesta");
+        var resourceGroupB = ResourceGroupIdentifier.From("xrgtestb");
+        var name = "xrg" + Guid.NewGuid().ToString("N")[..8];
+        CreateOrUpdateStorageAccountRequest Request() => new()
+        {
+            Location = "eastus",
+            Sku = new ResourceSku { Name = "Standard_LRS" },
+            Kind = "StorageV2",
+        };
+
+        try
+        {
+            var first = controlPlane.CreateOrUpdate(subscription, resourceGroupA, name, Request());
+            Assert.That(first.Result, Is.EqualTo(OperationResult.Created));
+
+            // Storage account names are globally unique in Azure, so the same name in a different resource
+            // group must be rejected with a conflict - not crash, and not leave B half-created on disk.
+            var second = controlPlane.CreateOrUpdate(subscription, resourceGroupB, name, Request());
+            Assert.That(second.Result, Is.EqualTo(OperationResult.Conflict), "expected a StorageAccountAlreadyTaken conflict");
+
+            var pathB = controlPlane.GetServiceInstancePath(subscription, resourceGroupB, name);
+            Assert.That(Directory.Exists(pathB), Is.False, "resource-group B must not be partially created");
         }
         finally
         {
