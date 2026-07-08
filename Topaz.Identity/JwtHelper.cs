@@ -56,7 +56,7 @@ public static class JwtHelper
             NotBefore = DateTime.UtcNow,
             IssuedAt = DateTime.UtcNow,
             Expires = DateTime.UtcNow.AddHours(1),
-            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(SecretKey), SecurityAlgorithms.HmacSha256Signature)
+            SigningCredentials = new SigningCredentials(TopazSigningKey.SecurityKey, SecurityAlgorithms.RsaSha256)
         };
         var token = tokenHandler.CreateToken(tokenDescriptor);
         var tokenString = tokenHandler.WriteToken(token);
@@ -72,7 +72,11 @@ public static class JwtHelper
         tokenHandler.ValidateToken(jwt, new TokenValidationParameters
         {
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(SecretKey),
+            // Topaz now signs RS256 (validated via the RSA public key, the same key the JWKS publishes).
+            // The symmetric key is retained as a fallback so legacy HS256 tokens (issued by any external
+            // component that shares Topaz's well-known HMAC key) keep validating during the transition to
+            // RSA-signed tokens as the single issuer.
+            IssuerSigningKeys = [TopazSigningKey.SecurityKey, new SymmetricSecurityKey(SecretKey)],
             ValidateIssuer = false,
             ValidateAudience = false,
             ClockSkew = TimeSpan.Zero
