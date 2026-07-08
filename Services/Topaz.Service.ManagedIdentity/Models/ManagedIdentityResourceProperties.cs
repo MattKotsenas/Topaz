@@ -1,5 +1,6 @@
 using Topaz.Service.Entra.Models;
 using Topaz.Service.ManagedIdentity.Models.Requests;
+using Topaz.Shared;
 
 namespace Topaz.Service.ManagedIdentity.Models;
 
@@ -17,7 +18,9 @@ public sealed class ManagedIdentityResourceProperties
         {
             ClientId = servicePrincipal.AppId,
             PrincipalId = servicePrincipal.Id,
-            TenantId = Guid.NewGuid().ToString(),
+            // A managed identity belongs to the emulator's (single) tenant - matching the tid the token
+            // endpoint stamps - so the resource and its issued tokens agree on the tenant.
+            TenantId = GlobalSettings.DefaultTenantId,
             IsolationScope = properties?.IsolationScope
         };
     }
