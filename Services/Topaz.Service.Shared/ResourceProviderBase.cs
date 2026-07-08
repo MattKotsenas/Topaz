@@ -147,7 +147,9 @@ public class ResourceProviderBase<TService> where TService : IServiceDefinition
 
         // Add a parameter which will allow explicitly saying how many segments should be looked for.
         var metadataFiles = Directory.EnumerateFiles(servicePath, "metadata.json", SearchOption.AllDirectories);
-        var servicePathSegments = TService.LocalDirectoryPath.Split("/");
+        // Split on either separator: EnumerateFiles / Path.Combine yield '\' on Windows and '/' on Linux, and the
+        // segment count must be the same on both so listing works off the container as well as on it.
+        var servicePathSegments = TService.LocalDirectoryPath.Split('/', '\\');
         var defaultLookForNoOfSegments =
             servicePathSegments.Length +
             2; // Local path will contain two additional segments: root directory and metadata filename 
@@ -165,7 +167,7 @@ public class ResourceProviderBase<TService> where TService : IServiceDefinition
 
         return metadataFiles
             .Where(file =>
-                file.Split("/").Length ==
+                file.Split('/', '\\').Length ==
                 (lookForNoOfSegments.HasValue ? lookForNoOfSegments.Value : defaultLookForNoOfSegments)
                 && (filter == null || file.Contains(filter))
                 && (serviceDiscriminator == null || file.Contains(sep + serviceDiscriminator + sep)))
