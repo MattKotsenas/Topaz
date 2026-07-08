@@ -1,7 +1,6 @@
 using System.Net;
 using System.Collections.Concurrent;
 using System.Text;
-using System.Text.Json;
 using Azure.Core;
 using Microsoft.AspNetCore.Http;
 using Microsoft.IdentityModel.Tokens;
@@ -314,7 +313,7 @@ public class TokenEndpoint(ITopazLogger logger) : IEndpointDefinition
                     .GetToken(new TokenRequestContext(), CancellationToken.None).Token,
                 RefreshToken = new AzureLocalCredential(objectId, preferredUsername: username)
                     .GetToken(new TokenRequestContext(), CancellationToken.None).Token,
-                IdToken = CreateIdToken(Issuer, clientId!, storedNonce, username ?? objectId, objectId,
+                IdToken = JwtHelper.CreateIdToken(Issuer, clientId!, storedNonce, username ?? objectId, objectId,
                     EntraService.TenantId),
                 Scope = form.TryGetValue("scope", out var scope)
                     ? scope
@@ -323,42 +322,6 @@ public class TokenEndpoint(ITopazLogger logger) : IEndpointDefinition
                         : "openid profile offline_access"
             };
             return token;
-        }
-
-        static string Base64UrlEncode(string input)
-        {
-            return Convert.ToBase64String(Encoding.UTF8.GetBytes(input))
-                .TrimEnd('=')
-                .Replace('+', '-')
-                .Replace('/', '_');
-        }
-
-        static string CreateIdToken(string issuer, string audience, string? nonce, string userName, string objectId,
-            string tenantId)
-        {
-            var header = new { alg = "none", typ = "JWT" };
-            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var payload = new Dictionary<string, object>
-            {
-                { "iss", issuer },
-                { "aud", audience },
-                { "iat", now },
-                { "exp", now + 3600 },
-                { "oid", objectId },
-                { "tid", tenantId },
-                { "sub", objectId },
-                { "preferred_username", userName }
-            };
-
-            if (!string.IsNullOrEmpty(nonce))
-            {
-                payload["nonce"] = nonce;
-            }
-
-            var headerJson = JsonSerializer.Serialize(header);
-            var payloadJson = JsonSerializer.Serialize(payload);
-
-            return Base64UrlEncode(headerJson) + "." + Base64UrlEncode(payloadJson) + ".";
         }
     }
 

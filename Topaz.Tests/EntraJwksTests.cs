@@ -107,6 +107,51 @@ public class EntraJwksTests
             "a token whose signing key is not in the JWKS must be rejected (this is the whole point of RBAC/authN)");
     }
 
+    [Test]
+    public void Id_token_is_RS256_and_validates_against_the_published_JWKS()
+    {
+        var idToken = JwtHelper.CreateIdToken(
+            issuer: "https://topaz.local.dev:8899/organizations/v2.0",
+            audience: "some-client-id",
+            nonce: "n-123",
+            userName: "user@topaz.local",
+            objectId: Globals.GlobalAdminId,
+            tenantId: "50717675-3E5E-4A1E-8CB5-C62D8BE8CA48");
+
+        var handler = new JwtSecurityTokenHandler();
+        var parsed = handler.ReadJwtToken(idToken);
+
+        // Precondition: the id_token used to be emitted unsigned (alg=none); it must now be RS256 with the kid.
+        Assert.That(parsed.Header.Alg, Is.EqualTo(SecurityAlgorithms.RsaSha256),
+            "precondition: the id_token must be RS256-signed, not the legacy alg=none");
+        Assert.That(parsed.Header.Kid, Is.EqualTo(TopazSigningKey.KeyId));
+
+        var jwks = new JsonWebKeySet(PublishedJwksJson());
+        var validationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKeys = jwks.GetSigningKeys(),
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+        };
+
+        handler.ValidateToken(idToken, validationParameters, out var validated);
+        Assert.That(((JwtSecurityToken)validated).Subject, Is.EqualTo(Globals.GlobalAdminId));
+    }
+
+    [Test]
+    public void Access_token_iss_is_the_tenant_qualified_discovery_issuer()
+    {
+        var token = new JwtSecurityTokenHandler().ReadJwtToken(JwtHelper.GenerateCliToken());
+
+        // The issuer OIDC discovery advertises for the tenant is BaseUrl/{tid}/v2.0; the access-token iss must
+        // match it (it was previously the bare BaseUrl, which standard ValidateIssuer clients would reject).
+        Assert.That(token.Issuer,
+            Is.EqualTo("https://topaz.local.dev:8899/50717675-3E5E-4A1E-8CB5-C62D8BE8CA48/v2.0"));
+    }
+
     private static string SignWithForeignKey()
     {
         using var rsa = RSA.Create(2048);

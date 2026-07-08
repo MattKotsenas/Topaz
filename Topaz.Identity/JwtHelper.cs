@@ -51,7 +51,9 @@ public static class JwtHelper
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(claims),
-            Issuer = "https://topaz.local.dev:8899",
+            // Tenant-qualified issuer matching what OIDC discovery advertises (BaseUrl/{tid}/v2.0), so a
+            // standard client validating the issuer against discovery accepts the token.
+            Issuer = $"https://topaz.local.dev:8899/{TenantId}/v2.0",
             Audience = audience,
             NotBefore = DateTime.UtcNow,
             IssuedAt = DateTime.UtcNow,
@@ -61,6 +63,42 @@ public static class JwtHelper
         var token = tokenHandler.CreateToken(tokenDescriptor);
         var tokenString = tokenHandler.WriteToken(token);
         return tokenString;
+    }
+
+    /// <summary>
+    /// Issues an RS256-signed OpenID Connect <c>id_token</c> (previously emitted unsigned as
+    /// <c>alg=none</c>). Signed with the same key as every other Topaz token so discovery's advertised
+    /// <c>id_token_signing_alg_values_supported: ["RS256"]</c> holds and standard OIDC clients can verify it
+    /// against the JWKS.
+    /// </summary>
+    public static string CreateIdToken(string issuer, string audience, string? nonce, string userName,
+        string objectId, string tenantId)
+    {
+        var claims = new List<Claim>
+        {
+            new("oid", objectId),
+            new("sub", objectId),
+            new("tid", tenantId),
+            new("preferred_username", userName)
+        };
+
+        if (!string.IsNullOrEmpty(nonce))
+        {
+            claims.Add(new Claim("nonce", nonce));
+        }
+
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity(claims),
+            Issuer = issuer,
+            Audience = audience,
+            NotBefore = DateTime.UtcNow,
+            IssuedAt = DateTime.UtcNow,
+            Expires = DateTime.UtcNow.AddHours(1),
+            SigningCredentials = new SigningCredentials(TopazSigningKey.SecurityKey, SecurityAlgorithms.RsaSha256)
+        };
+        return tokenHandler.WriteToken(tokenHandler.CreateToken(tokenDescriptor));
     }
     
     public static JwtSecurityToken? ValidateJwt(string jwt)
