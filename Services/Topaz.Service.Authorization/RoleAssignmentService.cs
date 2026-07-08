@@ -49,5 +49,24 @@ public sealed class RoleAssignmentService(Pipeline eventPipeline, ITopazLogger l
                         Scope = $"/subscriptions/{data!.SubscriptionId}"
                     }
                 }));
+
+        // Grant the well-known bootstrap service principal the built-in Owner role at the Tenant Root
+        // Group. New subscriptions are auto-parented under the root group, so the principal is authorized
+        // for any subscription via management-group role-assignment inheritance - letting external tools
+        // act with full rights through a real OAuth token + RBAC instead of the global-admin bypass.
+        eventPipeline.RegisterHandler<TenantInitializedEventData>(
+            TenantInitializedEvent.EventName,
+            _ => controlPlane.CreateManagementGroupRoleAssignment(
+                GlobalSettings.DefaultTenantId,
+                RoleAssignmentName.From(Globals.BootstrapOwnerRoleAssignmentName),
+                new CreateOrUpdateRoleAssignmentRequest
+                {
+                    Properties = new RoleAssignmentProperties
+                    {
+                        PrincipalId = Globals.BootstrapPrincipalObjectId,
+                        RoleDefinitionId = "8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+                        Scope = $"/providers/Microsoft.Management/managementGroups/{GlobalSettings.DefaultTenantId}"
+                    }
+                }));
     }
 }

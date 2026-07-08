@@ -82,7 +82,7 @@ internal sealed class ServicePrincipal : DirectoryObject
     {
         return new ServicePrincipal
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = request.Id ?? Guid.NewGuid().ToString(),
             AppId = request.AppId,
             AccountEnabled = request.AccountEnabled,
             DisplayName = effectiveDisplayName ?? request.DisplayName,

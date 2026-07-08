@@ -1,9 +1,16 @@
 namespace Topaz.Service.Entra.Models.Requests;
 
+using System.Text.Json.Serialization;
+
 internal sealed class CreateServicePrincipalRequest
 {
     // Required property
     public required string AppId { get; init; }
+
+    // Server-assigned object id. Not bound from client requests (real Graph assigns it) - the setter exists only
+    // so internal seeding can give well-known principals a stable id. Defaults to a fresh GUID in FromRequest.
+    [JsonIgnore]
+    public string? Id { get; init; }
 
     // Core properties
     public bool? AccountEnabled { get; init; }

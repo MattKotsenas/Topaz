@@ -1,10 +1,16 @@
 namespace Topaz.Service.Entra.Models.Requests;
 
+using System.Text.Json.Serialization;
+
 internal sealed class CreateApplicationRequest
 {
     // Core
     public Application.AddInData[]? AddIns { get; init; }
     public Application.ApiApplicationData? Api { get; init; }
+
+    // Server-assigned client id. Not bound from client requests (real Graph assigns it) - the setter exists only
+    // so internal seeding can give well-known applications a stable appId. Null from HTTP => generated in Create.
+    [JsonIgnore]
     public string? AppId { get; init; }
     public string? ApplicationTemplateId { get; init; }
     public Application.AppRoleData[]? AppRoles { get; init; }

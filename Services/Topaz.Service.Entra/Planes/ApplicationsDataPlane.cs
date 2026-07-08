@@ -32,7 +32,10 @@ internal sealed class ApplicationsDataPlane(EntraResourceProvider provider, ITop
     {
         logger.LogDebug(nameof(ApplicationsDataPlane), nameof(Create), "Creating an application `{0}`.", request.AppId);
 
-        var applicationIdentifier = ApplicationIdentifier.From(Guid.NewGuid().ToString());
+        // The appId is normally server-assigned (Graph clients don't supply one), but honor a caller-provided
+        // value when present so well-known applications (e.g. seeded bootstrap principals) get a stable appId.
+        var applicationIdentifier = ApplicationIdentifier.From(
+            string.IsNullOrWhiteSpace(request.AppId) ? Guid.NewGuid().ToString() : request.AppId);
         var entityPath = BuildLocalApplicationEntityPath(applicationIdentifier);
 
         if (File.Exists(entityPath))

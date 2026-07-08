@@ -1,5 +1,7 @@
 using Topaz.EventPipeline;
 using Topaz.EventPipeline.Events;
+using Topaz.Identity;
+using Topaz.Service.Entra.Domain;
 using Topaz.Service.Entra.Endpoints;
 using Topaz.Service.Entra.Endpoints.Applications;
 using Topaz.Service.Entra.Endpoints.Directory;
@@ -101,6 +103,8 @@ public class EntraService(Pipeline eventPipeline, ITopazLogger logger) : IServic
         
         CreateSuperAdminUser();
 
+        CreateBootstrapServicePrincipal();
+
         eventPipeline.TriggerEvent<TenantInitializedEventData, TenantInitializedEvent>(
             new TenantInitializedEvent { Data = new TenantInitializedEventData { TenantId = TenantId } });
     }
@@ -122,6 +126,46 @@ public class EntraService(Pipeline eventPipeline, ITopazLogger logger) : IServic
             },
             Mail = "topazadmin@topaz.local.dev"
         });
+    }
+
+    private void CreateBootstrapServicePrincipal()
+    {
+        logger.LogDebug(nameof(EntraService), nameof(CreateBootstrapServicePrincipal),
+            "Creating bootstrap service principal.");
+
+        var applicationsDataPlane = ApplicationsDataPlane.New(logger);
+        var servicePrincipalDataPlane = ServicePrincipalDataPlane.New(logger);
+
+        var existingApplication = applicationsDataPlane.Get(ApplicationIdentifier.From(Globals.BootstrapClientId), false);
+        if (existingApplication.Resource == null)
+        {
+            _ = applicationsDataPlane.Create(new CreateApplicationRequest
+            {
+                AppId = Globals.BootstrapClientId,
+                DisplayName = "Topaz Bootstrap Principal",
+                PasswordCredentials =
+                [
+                    new Models.Application.PasswordCredentialData
+                    {
+                        KeyId = Guid.NewGuid(),
+                        DisplayName = "bootstrap-secret",
+                        SecretText = Globals.BootstrapClientSecret
+                    }
+                ]
+            });
+        }
+
+        var existingServicePrincipal =
+            servicePrincipalDataPlane.Get(ServicePrincipalIdentifier.From(Globals.BootstrapClientId));
+        if (existingServicePrincipal.Resource == null)
+        {
+            _ = servicePrincipalDataPlane.Create(new CreateServicePrincipalRequest
+            {
+                Id = Globals.BootstrapPrincipalObjectId,
+                AppId = Globals.BootstrapClientId,
+                DisplayName = "Topaz Bootstrap Principal"
+            });
+        }
     }
 
     private void CreateServiceDirectory(string servicePath)
