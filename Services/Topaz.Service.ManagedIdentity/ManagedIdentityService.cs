@@ -18,6 +18,7 @@ public sealed class ManagedIdentityService(Pipeline eventPipeline, ITopazLogger 
     public IReadOnlyCollection<IEndpointDefinition> Endpoints =>
     [
         new ManagedIdentityEndpoint(eventPipeline, logger),
+        new ManagedIdentityTokenEndpoint(eventPipeline, logger),
         new GetSystemAssignedIdentityByResourceEndpoint(logger),
         new CreateOrUpdateFederatedIdentityCredentialEndpoint(logger),
         new GetFederatedIdentityCredentialEndpoint(logger),
