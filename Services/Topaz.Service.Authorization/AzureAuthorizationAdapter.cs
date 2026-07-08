@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Topaz.EventPipeline;
 using Topaz.Identity;
 using Topaz.Service.Authorization.Domain;
+using Topaz.Service.Authorization.Models;
 using Topaz.Service.Shared;
 using Topaz.Service.Shared.Domain;
 using Topaz.Shared;
@@ -129,6 +130,56 @@ public sealed class AzureAuthorizationAdapter(Pipeline eventPipeline, ITopazLogg
         logger.LogDebug(nameof(AzureAuthorizationAdapter), nameof(IsAuthorized),
             "No required permissions found in any role definition for the given subscription and object ID.");
         return (false, null);
+    }
+
+    /// <summary>
+    /// Computes the caller's effective permission blocks at <paramref name="scope"/>: the permission entries
+    /// (actions/notActions/dataActions/notDataActions) from every role definition the principal is assigned at
+    /// or above the scope - subscription assignments matched by scope prefix, plus management-group assignments
+    /// that propagate through the hierarchy. This is what the ARM <c>Microsoft.Authorization/permissions</c> API
+    /// returns ("what can I do here"); a caller unions the actions and subtracts the not-actions to decide access.
+    /// </summary>
+    internal IReadOnlyList<RoleDefinition.Permission> GetEffectivePermissions(string objectId, string? scope)
+    {
+        // The global admin bypasses RBAC everywhere (mirrors IsAuthorized); report unrestricted access.
+        if (objectId == Globals.GlobalAdminId)
+        {
+            return [new RoleDefinition.Permission { Actions = ["*"], DataActions = ["*"], NotActions = [], NotDataActions = [] }];
+        }
+
+        if (string.IsNullOrWhiteSpace(scope) || !scope.Contains("/subscriptions/"))
+        {
+            return [];
+        }
+
+        var subscriptionIdentifier = SubscriptionIdentifier.From(scope.ExtractValueFromPath(2));
+
+        var subscriptionRoleDefinitionIds = (_controlPlane
+                .ListSubscriptionRoleAssignmentsByEntraObject(subscriptionIdentifier, objectId).Resource ?? [])
+            .Where(a => !string.IsNullOrEmpty(a.Properties.Scope) &&
+                        scope.StartsWith(a.Properties.Scope, StringComparison.OrdinalIgnoreCase))
+            .Select(a => a.Properties.RoleDefinitionId);
+
+        var managementGroupRoleDefinitionIds = _controlPlane
+            .ListManagementGroupRoleAssignmentsByEntraObject(subscriptionIdentifier.Value.ToString(), objectId)
+            .Select(a => a.Properties.RoleDefinitionId);
+
+        var permissions = new List<RoleDefinition.Permission>();
+        var seenDefinitions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var roleDefinitionId in subscriptionRoleDefinitionIds.Concat(managementGroupRoleDefinitionIds))
+        {
+            if (string.IsNullOrEmpty(roleDefinitionId)) continue;
+
+            var definition = _controlPlane.Get(subscriptionIdentifier, RoleDefinitionIdentifier.From(roleDefinitionId));
+            if (definition.Resource?.Properties.Permissions == null) continue;
+            // A principal can hold the same role via several assignments; report each definition's permissions once.
+            if (definition.Resource.Id != null && !seenDefinitions.Add(definition.Resource.Id)) continue;
+
+            permissions.AddRange(definition.Resource.Properties.Permissions);
+        }
+
+        return permissions;
     }
 
     public bool PrincipalHasPermissions(SubscriptionIdentifier subscriptionIdentifier, string objectId,

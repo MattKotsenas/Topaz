@@ -1,9 +1,11 @@
-﻿using Topaz.Service.Authorization.Endpoints;
+using Topaz.EventPipeline;
+using Topaz.Service.Authorization.Endpoints;
 using Topaz.Service.Shared;
+using Topaz.Shared;
 
 namespace Topaz.Service.Authorization;
 
-public sealed class ResourceAuthorizationService : IServiceDefinition
+public sealed class ResourceAuthorizationService(Pipeline eventPipeline, ITopazLogger logger) : IServiceDefinition
 {
     public static bool IsGlobalService => false;
     public static string LocalDirectoryPath => Path.Combine("{resource}", ".authorization");
@@ -12,7 +14,7 @@ public sealed class ResourceAuthorizationService : IServiceDefinition
     public string Name => "Resource Authorization";
 
     public IReadOnlyCollection<IEndpointDefinition> Endpoints => [
-        new ResourceAuthorizationEndpoint()
+        new ResourceAuthorizationEndpoint(eventPipeline, logger)
     ];
 
     public void Bootstrap()
