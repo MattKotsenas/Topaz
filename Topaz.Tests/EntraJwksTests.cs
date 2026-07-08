@@ -152,6 +152,43 @@ public class EntraJwksTests
             Is.EqualTo("https://topaz.local.dev:8899/50717675-3E5E-4A1E-8CB5-C62D8BE8CA48/v2.0"));
     }
 
+    [Test]
+    public void Managed_identity_token_is_RS256_carries_the_MI_claims_and_validates_against_the_JWKS()
+    {
+        const string principalId = "11111111-1111-1111-1111-111111111111";
+        const string clientId = "22222222-2222-2222-2222-222222222222";
+        const string resource = "https://storage.azure.com/";
+        const string mirid =
+            "/subscriptions/s/resourceGroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/mi";
+
+        var token = JwtHelper.CreateManagedIdentityToken(principalId, clientId, resource, mirid);
+
+        var jwks = new JsonWebKeySet(PublishedJwksJson());
+        var handler = new JwtSecurityTokenHandler();
+
+        // The MI token must verify against the published JWKS just like any other Topaz-issued token.
+        handler.ValidateToken(token, new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKeys = jwks.GetSigningKeys(),
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+        }, out var validated);
+
+        var jwt = (JwtSecurityToken)validated;
+        Assert.That(jwt.Header.Alg, Is.EqualTo(SecurityAlgorithms.RsaSha256),
+            "the MI token must be RS256 so Topaz is the single JWKS-verifiable issuer");
+        // The RBAC principal is the MI's principal id; the client id and mirid identify the identity.
+        Assert.That(jwt.Subject, Is.EqualTo(principalId));
+        Assert.That(jwt.Claims.First(c => c.Type == "oid").Value, Is.EqualTo(principalId));
+        Assert.That(jwt.Claims.First(c => c.Type == "appid").Value, Is.EqualTo(clientId));
+        Assert.That(jwt.Claims.First(c => c.Type == "azp").Value, Is.EqualTo(clientId));
+        Assert.That(jwt.Claims.First(c => c.Type == "xms_mirid").Value, Is.EqualTo(mirid));
+        Assert.That(jwt.Audiences, Does.Contain(resource));
+    }
+
     private static string SignWithForeignKey()
     {
         using var rsa = RSA.Create(2048);

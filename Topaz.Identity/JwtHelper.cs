@@ -100,7 +100,42 @@ public static class JwtHelper
         };
         return tokenHandler.WriteToken(tokenHandler.CreateToken(tokenDescriptor));
     }
-    
+
+    /// <summary>
+    /// Issues an RS256-signed managed-identity access token, so Topaz (as the emulated identity provider) is
+    /// the single issuer of MI tokens rather than each caller self-minting with a shared key. Carries the
+    /// AAD/MI claim shape a real IMDS token has: <c>sub</c>/<c>oid</c> = the MI's principal id (the RBAC
+    /// principal), <c>appid</c>/<c>azp</c> = its client id, <c>aud</c> = the requested resource, and
+    /// <c>xms_mirid</c> = the MI's ARM resource id.
+    /// </summary>
+    public static string CreateManagedIdentityToken(string principalId, string clientId, string resource,
+        string armResourceId, string? tenantId = null)
+    {
+        var tenant = string.IsNullOrWhiteSpace(tenantId) ? TenantId : tenantId;
+        var claims = new List<Claim>
+        {
+            new("sub", principalId),
+            new("oid", principalId),
+            new("appid", clientId),
+            new("azp", clientId),
+            new("tid", tenant),
+            new("xms_mirid", armResourceId)
+        };
+
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity(claims),
+            Issuer = $"https://topaz.local.dev:8899/{tenant}/v2.0",
+            Audience = resource,
+            NotBefore = DateTime.UtcNow,
+            IssuedAt = DateTime.UtcNow,
+            Expires = DateTime.UtcNow.AddHours(1),
+            SigningCredentials = new SigningCredentials(TopazSigningKey.SecurityKey, SecurityAlgorithms.RsaSha256)
+        };
+        return tokenHandler.WriteToken(tokenHandler.CreateToken(tokenDescriptor));
+    }
+
     public static JwtSecurityToken? ValidateJwt(string jwt)
     {
         jwt = NormalizeBearerToken(jwt);
