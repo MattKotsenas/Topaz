@@ -5,6 +5,12 @@ namespace Topaz.Shared;
 public sealed class PrettyTopazLogger : ITopazLogger
 {
     private const string LogFilePath = "topaz.log";
+
+    // Every instance writes the same shared topaz.log, so concurrent callers (e.g. an ARM copy loop
+    // provisioning several resources at once, each logging) otherwise race on File.AppendAllText and can
+    // corrupt a line or throw. Serialise every file write behind this static lock. Monitor is re-entrant.
+    private static readonly object FileLock = new();
+
     private CorrelationIdFactory? _idFactory;
     private bool IsLoggingToFileEnabled { get; set; }
     public LogLevel LogLevel { get; private set; } = LogLevel.Information;
@@ -107,7 +113,10 @@ public sealed class PrettyTopazLogger : ITopazLogger
 
     private static void RefreshLogFile()
     {
-        File.WriteAllText(LogFilePath, string.Empty);
+        lock (FileLock)
+        {
+            File.WriteAllText(LogFilePath, string.Empty);
+        }
     }
 
     private void Log(string message, LogLevel logLevel, Guid correlationId, Exception? exception = null)
@@ -133,8 +142,11 @@ public sealed class PrettyTopazLogger : ITopazLogger
     private void TryWriteToFile(string log)
     {
         if (!IsLoggingToFileEnabled) return;
-        
-        File.AppendAllText(LogFilePath, $"{log}{Environment.NewLine}");
+
+        lock (FileLock)
+        {
+            File.AppendAllText(LogFilePath, $"{log}{Environment.NewLine}");
+        }
     }
 
     private void TryWriteToFile(Exception exception, string timestamp, LogLevel logLevel)

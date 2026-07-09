@@ -24,11 +24,15 @@ namespace Topaz.Tests;
 public sealed class ControlPlaneConcurrentCreateTests
 {
     [Test]
+    [NonParallelizable]
     public async Task Concurrent_create_of_many_instances_under_one_resource_group_persists_every_metadata_file()
     {
-        var logger = new SilentLogger();
-        // The static DNS logger writes to a shared topaz.log; silence it so its (separate) non-thread-safe
-        // file append does not mask the directory-creation race under test.
+        // Run the REAL PrettyTopazLogger with file logging enabled (not a SilentLogger): the create path logs
+        // through it, so this exercises its shared-topaz.log writes under the same 48-way contention. Before the
+        // file-write lock, concurrent File.AppendAllText threw (FileShare.Read blocks a second writer) and this
+        // surfaced in the errors bag; the lock serialises the writes. refreshLog truncates topaz.log first.
+        var logger = new PrettyTopazLogger();
+        logger.EnableLoggingToFile(refreshLog: true);
         GlobalDnsEntries.ConfigureLogger(logger);
         // The real deployment path: AzureStorageControlPlane.CreateOrUpdate creates the account dir + metadata
         // (with a DNS entry, createOperation=true) and then writes properties.xml into the same instance dir.
@@ -77,6 +81,14 @@ public sealed class ControlPlaneConcurrentCreateTests
         }
         finally
         {
+            // GlobalDnsEntries holds the logger statically; reset it so later tests don't inherit this
+            // file-logging one (and drop the topaz.log this test produced).
+            GlobalDnsEntries.ConfigureLogger(new SilentLogger());
+            if (File.Exists("topaz.log"))
+            {
+                File.Delete("topaz.log");
+            }
+
             var subscriptionRoot = Path.Combine(GlobalSettings.MainEmulatorDirectory, ".subscription", subscription.Value.ToString());
             if (Directory.Exists(subscriptionRoot))
             {
