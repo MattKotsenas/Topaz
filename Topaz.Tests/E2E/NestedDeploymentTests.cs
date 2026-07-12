@@ -91,4 +91,86 @@ public class NestedDeploymentTests
         Assert.That(nestedDeployment.Data.Properties.ProvisioningState?.ToString(), Is.EqualTo("Succeeded").IgnoreCase,
             "Expected nested deployment to have succeeded.");
     }
+
+    // A resource-group-scoped template whose nested Microsoft.Resources/deployments OMITS
+    // the 'resourceGroup' property. Per the ARM spec, the nested deployment then inherits
+    // the parent deployment's resource group and creates its resources there.
+    private static string BuildRgScopedInheritedNestedTemplate(string vaultName) => $$"""
+        {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "resources": [
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2021-04-01",
+              "name": "inner-kv-deploy",
+              "properties": {
+                "mode": "Incremental",
+                "expressionEvaluationOptions": { "scope": "inner" },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "resources": [
+                    {
+                      "type": "Microsoft.KeyVault/vaults",
+                      "apiVersion": "2022-07-01",
+                      "name": "{{vaultName}}",
+                      "location": "westeurope",
+                      "properties": {
+                        "enabledForTemplateDeployment": true,
+                        "tenantId": "00000000-0000-0000-0000-000000000000",
+                        "sku": { "name": "standard", "family": "A" },
+                        "accessPolicies": [],
+                        "networkAcls": { "defaultAction": "Allow", "bypass": "AzureServices" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+        """;
+
+    [Test]
+    public async Task NestedDeployment_RgScopeWithoutResourceGroup_InheritsParentRgAndProvisionsInner()
+    {
+        // Arrange
+        var subscriptionId = Guid.NewGuid();
+        const string resourceGroupName = "nested-inherit-rg";
+        const string vaultName = "nestedinheritkv";
+        var credentials = new AzureLocalCredential(Globals.GlobalAdminId);
+        var armClient = new ArmClient(credentials, subscriptionId.ToString(), ArmClientOptions);
+        using var topaz = new TopazArmClient(credentials);
+        await topaz.CreateSubscriptionAsync(subscriptionId, "nested-inherit-sub");
+
+        var subscription = await armClient.GetDefaultSubscriptionAsync();
+        var rg = await subscription.GetResourceGroups().CreateOrUpdateAsync(
+            WaitUntil.Completed, resourceGroupName, new ResourceGroupData(AzureLocation.WestEurope));
+
+        // Act: an RG-scoped deployment whose nested deployment omits 'resourceGroup'.
+        await rg.Value.GetArmDeployments().CreateOrUpdateAsync(
+            WaitUntil.Completed, "outer-with-inherited-nested",
+            new ArmDeploymentContent(new ArmDeploymentProperties(ArmDeploymentMode.Incremental)
+            {
+                Template = BinaryData.FromString(BuildRgScopedInheritedNestedTemplate(vaultName))
+            }));
+
+        // Assert: both the nested deployment resource and its Key Vault live in the parent's resource group.
+        var nested = await rg.Value.GetArmDeploymentAsync("inner-kv-deploy");
+        Assert.That(nested.Value.Data.Properties.ProvisioningState?.ToString(),
+            Is.EqualTo("Succeeded").IgnoreCase, "The inherited nested deployment should have succeeded.");
+
+        KeyVaultResource? keyVault = null;
+        try
+        {
+            keyVault = await rg.Value.GetKeyVaults().GetAsync(vaultName);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            Assert.Fail($"Key Vault '{vaultName}' was not created in the inherited resource group '{resourceGroupName}'.");
+        }
+
+        Assert.That(keyVault, Is.Not.Null);
+    }
 }

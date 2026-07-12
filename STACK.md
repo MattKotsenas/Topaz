@@ -30,6 +30,7 @@ storage emulator do not need them, and dropping them keeps this branch small and
 | copy loops + nested | handle zero-count copy loops, nested resources, and copied-resource evaluation with copy context |
 | generic resource passthrough | persist + GET unmodeled deployment resources |
 | templateLink network fetch | when `TOPAZ_ARTIFACT_FETCH_ENDPOINT` is set, fetch a deployment's linked template blob over HTTP (carrying the link's original account Host) instead of reading local storage, so a template hosted in an external storage backend still resolves |
+| nested deployment resource-group inheritance | a nested `Microsoft.Resources/deployments` that omits `resourceGroup` inherits the parent deployment's resource group (per the ARM spec) instead of being dropped; scope parsing is case-insensitive and a failed nested deployment surfaces its error on the parent |
 
 ### Host / infrastructure
 

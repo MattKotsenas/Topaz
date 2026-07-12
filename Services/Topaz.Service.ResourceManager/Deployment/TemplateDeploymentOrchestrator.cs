@@ -285,10 +285,12 @@ public sealed class TemplateDeploymentOrchestrator(
         logger.LogInformation($"Deployment of {templateDeployment.Id} started.");
 
         // Parse scope identifiers from the deployment ID once; used for both property
-        // expression evaluation and output evaluation below.
+        // expression evaluation and output evaluation below. Scope-segment casing is not
+        // guaranteed, so parse subscription/resource-group case-insensitively via the shared helper.
         var idParts = templateDeployment.Id.TrimStart('/').Split('/');
-        var deploymentSubscriptionId = idParts.Length > 1 && idParts[0] == "subscriptions" ? idParts[1] : string.Empty;
-        var deploymentResourceGroupName = idParts.Length > 3 && idParts[2] == "resourceGroups" ? idParts[3] : string.Empty;
+        var (scopeSubscriptionId, scopeResourceGroupName) = GetDeploymentScope(templateDeployment.Id);
+        var deploymentSubscriptionId = scopeSubscriptionId ?? string.Empty;
+        var deploymentResourceGroupName = scopeResourceGroupName ?? string.Empty;
 
         var hasProvisioningFailed = false;
 
@@ -599,19 +601,30 @@ public sealed class TemplateDeploymentOrchestrator(
                 return;
             }
 
-            // Extract resourceGroup property
-            if (!resourceObj.TryGetValue("resourceGroup", out var rgElement))
+            // Resolve the target resource group. Per the ARM spec, a nested
+            // Microsoft.Resources/deployments that omits 'resourceGroup' inherits the parent
+            // deployment's resource group; a subscription-scoped parent has none, which is
+            // not yet supported.
+            var (parentSubscriptionId, parentResourceGroupName) = GetDeploymentScope(parentDeployment.Id);
+            string? nestedRgName;
+            if (resourceObj.TryGetValue("resourceGroup", out var rgElement))
             {
-                logger.LogWarning($"Nested deployment '{genericResource.Name}' has no 'resourceGroup' property; subscription-scoped nested deployments are not yet supported.");
-                return;
+                nestedRgName = rgElement.GetString();
+                if (string.IsNullOrWhiteSpace(nestedRgName))
+                {
+                    logger.LogWarning($"Nested deployment '{genericResource.Name}' has empty 'resourceGroup' property.");
+                    hasProvisioningFailed = true;
+                    return;
+                }
             }
-
-            var nestedRgName = rgElement.GetString();
-            if (string.IsNullOrWhiteSpace(nestedRgName))
+            else
             {
-                logger.LogWarning($"Nested deployment '{genericResource.Name}' has empty 'resourceGroup' property.");
-                hasProvisioningFailed = true;
-                return;
+                nestedRgName = parentResourceGroupName;
+                if (string.IsNullOrWhiteSpace(nestedRgName))
+                {
+                    logger.LogWarning($"Nested deployment '{genericResource.Name}' has no 'resourceGroup' property and its parent is subscription-scoped, which is not yet supported.");
+                    return;
+                }
             }
 
             // Extract properties block
@@ -649,9 +662,8 @@ public sealed class TemplateDeploymentOrchestrator(
                 : "Incremental";
 
             // Step 2: Resolve nested context identifiers
-            var parentIdParts = parentDeployment.Id.TrimStart('/').Split('/');
-            var nestedSubId = parentIdParts.Length > 1 && parentIdParts[0] == "subscriptions"
-                ? SubscriptionIdentifier.From(parentIdParts[1])
+            var nestedSubId = parentSubscriptionId != null
+                ? SubscriptionIdentifier.From(parentSubscriptionId)
                 : throw new InvalidOperationException($"Cannot extract subscription ID from parent deployment ID: {parentDeployment.Id}");
 
             var nestedRgId = ResourceGroupIdentifier.From(nestedRgName);
@@ -659,9 +671,11 @@ public sealed class TemplateDeploymentOrchestrator(
             // Step 3: Build inner metadata
             var subscriptionMetadata = new SubscriptionMetadata(nestedSubId);
             
-            // Extract parent RG metadata to get location
-            var parentRgMetadata = parentDeployment.Metadata.TryGetValue(DeploymentMetadata.ResourceGroupKey, out var rgMetadataToken)
-                ? JsonSerializer.Deserialize<ResourceGroupMetadata>(rgMetadataToken.ToString(), GlobalSettings.JsonOptions)
+            // ResourceGroupMetadata is not round-trippable (its only constructor takes identifier
+            // objects, not the serialized Id/Name/Location), so read 'location' from the JToken directly.
+            var parentRgLocation = parentDeployment.Metadata.TryGetValue(DeploymentMetadata.ResourceGroupKey, out var rgMetadataToken)
+                                   && rgMetadataToken is JObject rgMetadataObj
+                ? rgMetadataObj["location"]?.Value<string>()
                 : null;
 
             AzureLocation nestedLocation;
@@ -669,9 +683,9 @@ public sealed class TemplateDeploymentOrchestrator(
             {
                 nestedLocation = new AzureLocation(genericResource.Location);
             }
-            else if (parentRgMetadata?.Location != null)
+            else if (!string.IsNullOrWhiteSpace(parentRgLocation))
             {
-                nestedLocation = parentRgMetadata.Location;
+                nestedLocation = new AzureLocation(parentRgLocation);
             }
             else if (parentDeployment.Metadata.TryGetValue(DeploymentMetadata.LocationKey, out var parentLocationToken)
                      && parentLocationToken.Type == JTokenType.String
@@ -778,9 +792,11 @@ public sealed class TemplateDeploymentOrchestrator(
                 return;
             }
 
-            if (innerJob.Status == TemplateDeployment.DeploymentStatus.Failed || 
+            if (innerJob.Status == TemplateDeployment.DeploymentStatus.Failed ||
                 innerJob.Status == TemplateDeployment.DeploymentStatus.Cancelled)
             {
+                parentDeployment.SetError(nestedDeploymentResource.Properties.Error
+                    ?? new DeploymentErrorInfo { Code = "NestedDeploymentFailed", Message = $"Nested deployment '{genericResource.Name}' {innerJob.Status}." });
                 hasProvisioningFailed = true;
             }
             else
@@ -797,6 +813,7 @@ public sealed class TemplateDeploymentOrchestrator(
         {
             logger.LogError(nameof(TemplateDeploymentOrchestrator), nameof(HandleNestedDeployment),
                 "Failed to handle nested deployment '{0}': {1}", genericResource.Name, ex.Message);
+            parentDeployment.SetError(new DeploymentErrorInfo { Code = "NestedDeploymentFailed", Message = ex.Message });
             hasProvisioningFailed = true;
         }
     }
