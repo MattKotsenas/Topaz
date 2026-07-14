@@ -513,8 +513,7 @@ public sealed class TemplateDeploymentOrchestrator(
             subscriptionId,
             resourceGroupName ?? string.Empty,
             templateDeployment.Template,
-            resource,
-            logger);
+            resource);
 
         return resourceObject.ToString(Newtonsoft.Json.Formatting.None);
     }

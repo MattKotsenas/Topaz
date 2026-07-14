@@ -302,8 +302,7 @@ public class ArmDeploymentResourceEvaluationTests
             subscriptionId.ToString(),
             "rg",
             template,
-            resource,
-            logger);
+            resource);
 
         var properties = (JObject)evaluatedResource["properties"]!;
         Assert.That(properties["literalValue"]!.Value<string>(), Is.EqualTo("/literal/survives"));
@@ -481,7 +480,7 @@ public class ArmDeploymentResourceEvaluationTests
         var resourceProvider = new ResourceManagerResourceProvider(logger);
         // Persist the deployment resource before routing, mirroring the real control plane
         // (ResourceManagerControlPlane.CreateOrUpdateDeployment): RouteDeployment appends
-        // operation records into the deployment's directory, which this persist creates.
+        // operation records into the deployment's directory, which this call creates.
         resourceProvider.CreateOrUpdate(subscriptionId, resourceGroupId, deployment.Name, deployment);
         var orchestrator = new TemplateDeploymentOrchestrator(
             pipeline,

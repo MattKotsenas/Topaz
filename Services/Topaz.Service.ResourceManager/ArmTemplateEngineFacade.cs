@@ -370,8 +370,7 @@ internal sealed class ArmTemplateEngineFacade(ITopazLogger logger)
         string subscriptionId,
         string resourceGroupName,
         Template template,
-        TemplateResource resource,
-        ITopazLogger logger)
+        TemplateResource resource)
     {
         var resourceJson = JsonExtensions.ToJson(resource, SerializerSettings.SerializerObjectTypeSettings);
         var resourceObject = JObject.Parse(resourceJson);
