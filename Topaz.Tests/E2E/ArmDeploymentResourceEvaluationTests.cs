@@ -284,7 +284,8 @@ public class ArmDeploymentResourceEvaluationTests
         var expectedRoleDefinitionId =
             $"/subscriptions/{subscriptionId}/providers/Microsoft.Authorization/roleDefinitions/{roleDefinitionId}";
 
-        var facade = new ArmTemplateEngineFacade();
+        var logger = new CapturingLogger();
+        var facade = new ArmTemplateEngineFacade(logger);
         var template = facade.Parse(BuildRoleAssignmentTemplate(roleDefinitionId));
         facade.ProcessTemplate(
             new SubscriptionIdentifier(subscriptionId),
@@ -297,7 +298,6 @@ public class ArmDeploymentResourceEvaluationTests
         Assert.That(resource.ToJson(), Does.Contain("subscriptionResourceId"),
             "precondition: generic resource properties are not evaluated by the template preprocessing pass.");
 
-        var logger = new CapturingLogger();
         var evaluatedResource = facade.EvaluateResource(
             subscriptionId.ToString(),
             "rg",
@@ -314,7 +314,7 @@ public class ArmDeploymentResourceEvaluationTests
     [Test]
     public void ProcessTemplate_WhenResourceCopyCountResolvesToZero_RemovesCopiedResource()
     {
-        var facade = new ArmTemplateEngineFacade();
+        var facade = new ArmTemplateEngineFacade(new CapturingLogger());
         var template = facade.Parse(BuildZeroCountCopyTemplate());
 
         facade.ProcessTemplate(
@@ -449,7 +449,7 @@ public class ArmDeploymentResourceEvaluationTests
                 new AzureLocation("westeurope"),
                 new ResourceGroupProperties()));
 
-        var facade = new ArmTemplateEngineFacade();
+        var facade = new ArmTemplateEngineFacade(logger);
         var template = facade.Parse(templateJson);
         var metadata = new ResourceManagerDeploymentMetadata
         {
@@ -479,6 +479,10 @@ public class ArmDeploymentResourceEvaluationTests
             }
         };
         var resourceProvider = new ResourceManagerResourceProvider(logger);
+        // Persist the deployment resource before routing, mirroring the real control plane
+        // (ResourceManagerControlPlane.CreateOrUpdateDeployment): RouteDeployment appends
+        // operation records into the deployment's directory, which this persist creates.
+        resourceProvider.CreateOrUpdate(subscriptionId, resourceGroupId, deployment.Name, deployment);
         var orchestrator = new TemplateDeploymentOrchestrator(
             pipeline,
             resourceProvider,
