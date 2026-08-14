@@ -77,6 +77,7 @@ public class EntraService(Pipeline eventPipeline, ITopazLogger logger) : IServic
 
     public void Initialize()
     {
+        _ = EntraAuthority.Current;
         logger.LogDebug(nameof(EntraService), nameof(Initialize),$"Attempting to initialize Entra service directory directory...");
         
         var servicePath = Path.Combine(GlobalSettings.MainEmulatorDirectory, LocalDirectoryPath);

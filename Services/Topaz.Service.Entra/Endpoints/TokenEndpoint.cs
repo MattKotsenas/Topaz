@@ -1,6 +1,7 @@
 using System.Net;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Web;
 using Azure.Core;
 using Microsoft.AspNetCore.Http;
 using Microsoft.IdentityModel.Tokens;
@@ -16,7 +17,6 @@ namespace Topaz.Service.Entra.Endpoints;
 
 public class TokenEndpoint(ITopazLogger logger) : IEndpointDefinition
 {
-    private const string Issuer = "https://topaz.local.dev:8899/organizations/v2.0";
     private static readonly ConcurrentDictionary<string, string> RefreshTokenUsernames = new();
 
     private readonly UserDataPlane _userDataPlane = UserDataPlane.New(logger);
@@ -55,21 +55,8 @@ public class TokenEndpoint(ITopazLogger logger) : IEndpointDefinition
         logger.LogDebug(nameof(TokenEndpoint), nameof(GetResponse), "Received body: {0}", body);
 
         string? code = null;
-        var form = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrEmpty(body))
-        {
-            foreach (var part in body.Split('&', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var idx = part.IndexOf('=');
-                if (idx <= 0) continue;
-
-                var k = Uri.UnescapeDataString(part[..idx]);
-                var v = Uri.UnescapeDataString(part[(idx + 1)..]);
-                form[k] = v;
-            }
-
-            form.TryGetValue("code", out code);
-        }
+        var form = ParseFormBody(body);
+        form.TryGetValue("code", out code);
 
         logger.LogDebug(nameof(TokenEndpoint), nameof(GetResponse), "Received code: {0}", code);
 
@@ -292,7 +279,16 @@ public class TokenEndpoint(ITopazLogger logger) : IEndpointDefinition
             return;
         }
 
-        var token = CreateTokenResponse(context, objectId, clientId, storedNonce, username, form);
+        var audience = ResolveTokenAudience(context, form);
+
+        var token = CreateTokenResponse(
+            context,
+            objectId,
+            clientId,
+            storedNonce,
+            username,
+            form,
+            audience);
 
         if (!string.IsNullOrWhiteSpace(token.RefreshToken) && !string.IsNullOrWhiteSpace(username))
         {
@@ -302,27 +298,45 @@ public class TokenEndpoint(ITopazLogger logger) : IEndpointDefinition
         response.CreateJsonContentResponse(token);
     }
 
-    private static TokenResponse CreateTokenResponse(HttpContext context, string objectId, string? clientId,
+    internal static TokenResponse CreateTokenResponse(HttpContext context, string objectId, string? clientId,
         string? storedNonce,
-        string? username, Dictionary<string, string> form)
+        string? username, Dictionary<string, string> form, string audience)
     {
         {
+            var authority = EntraAuthority.Current;
+            var scope = ExtractValueForToken(context, form, "scope", null);
+            var credential = new AzureLocalCredential(
+                objectId,
+                isForGraph: false,
+                preferredUsername: username,
+                audience: audience);
             var token = new TokenResponse
             {
-                AccessToken = new AzureLocalCredential(objectId, preferredUsername: username)
+                AccessToken = credential
                     .GetToken(new TokenRequestContext(), CancellationToken.None).Token,
-                RefreshToken = new AzureLocalCredential(objectId, preferredUsername: username)
+                RefreshToken = credential
                     .GetToken(new TokenRequestContext(), CancellationToken.None).Token,
-                IdToken = JwtHelper.CreateIdToken(Issuer, clientId!, storedNonce, username ?? objectId, objectId,
+                IdToken = JwtHelper.CreateIdToken(
+                    authority.OrganizationsIssuer,
+                    clientId!,
+                    storedNonce,
+                    username ?? objectId,
+                    objectId,
                     EntraService.TenantId),
-                Scope = form.TryGetValue("scope", out var scope)
-                    ? scope
-                    : context.Request.Query.TryGetValueForKey("scope", out var qscope)
-                        ? qscope
-                        : "openid profile offline_access"
+                Scope = scope ?? "openid profile offline_access"
             };
             return token;
         }
+    }
+
+    internal static string ResolveTokenAudience(
+        HttpContext context,
+        Dictionary<string, string> form)
+    {
+        var resource = ExtractValueForToken(context, form, "resource", null);
+        return string.IsNullOrWhiteSpace(resource)
+            ? EntraAuthority.Current.GetAudience(ExtractValueForToken(context, form, "scope", null))
+            : resource;
     }
 
     private static string? ExtractValueForToken(HttpContext context, Dictionary<string, string> form, string key,
@@ -332,4 +346,16 @@ public class TokenEndpoint(ITopazLogger logger) : IEndpointDefinition
             context.Request.Query.TryGetValueForKey(key, out var qcid) ? qcid :
             defaultValue;
     }
+
+    internal static Dictionary<string, string> ParseFormBody(string body)
+    {
+        var parsed = HttpUtility.ParseQueryString(body);
+        return parsed.AllKeys
+            .Where(key => key is not null)
+            .ToDictionary(
+                key => key!,
+                key => parsed[key] ?? string.Empty,
+                StringComparer.OrdinalIgnoreCase);
+    }
+
 }

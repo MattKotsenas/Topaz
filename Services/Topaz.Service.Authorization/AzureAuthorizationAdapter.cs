@@ -51,7 +51,12 @@ public sealed class AzureAuthorizationAdapter(Pipeline eventPipeline, ITopazLogg
         logger.LogDebug(nameof(AzureAuthorizationAdapter), nameof(IsAuthorized),
             "Token validated - attempting authorization for `{0}`", validatedToken.Subject);
 
-        if (validatedToken.Audiences.Any(a => a.EndsWith("/.graph")))
+        if (validatedToken.Claims.Any(
+                claim => claim.Type == JwtHelper.TokenTypeClaim
+                    && string.Equals(
+                        claim.Value,
+                        JwtHelper.GraphTokenType,
+                        StringComparison.Ordinal)))
         {
             logger.LogDebug(nameof(AzureAuthorizationAdapter), nameof(IsAuthorized),
                 "Token is for Microsoft Graph - skipping authorization. This behaviour may change in the future.");

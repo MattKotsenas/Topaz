@@ -6,6 +6,9 @@ namespace Topaz.Identity;
 
 public static class JwtHelper
 {
+    internal const string TokenTypeClaim = "topaz_token_type";
+    internal const string GraphTokenType = "graph";
+
     private const string TenantId = "50717675-3E5E-4A1E-8CB5-C62D8BE8CA48";
 
     private static readonly byte[] SecretKey =
@@ -17,9 +20,19 @@ public static class JwtHelper
     /// </summary>
     public static string GenerateCliToken() => GenerateJwt(Globals.GlobalAdminId);
 
-    internal static string GenerateJwt(string objectId, bool isForGraph = false, string? preferredUsername = null)
+    internal static string GenerateJwt(
+        string objectId,
+        bool isForGraph = false,
+        string? preferredUsername = null,
+        string? audience = null,
+        EntraAuthority? configuredAuthority = null)
     {
-        return CreateJwt(objectId, isForGraph ? "https://topaz.local.dev:8899/.graph" : "https://topaz.local.dev:8899",
+        var authority = configuredAuthority ?? EntraAuthority.Current;
+        return CreateJwt(
+            objectId,
+            authority,
+            audience ?? (isForGraph ? authority.GetEndpoint("/.graph") : authority.Origin),
+            isForGraph,
             preferredUsername);
     }
 
@@ -28,10 +41,16 @@ public static class JwtHelper
     /// </summary>
     public static string IssueAcrToken(string objectId)
     {
-        return CreateJwt(objectId, "https://topaz.local.dev:8899");
+        var authority = EntraAuthority.Current;
+        return CreateJwt(objectId, authority, authority.Origin, isForGraph: false);
     }
 
-    private static string CreateJwt(string objectId, string audience, string? preferredUsername = null)
+    private static string CreateJwt(
+        string objectId,
+        EntraAuthority authority,
+        string audience,
+        bool isForGraph,
+        string? preferredUsername = null)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
         var claims = new List<Claim>
@@ -47,13 +66,17 @@ public static class JwtHelper
         {
             claims.Add(new Claim("preferred_username", preferredUsername));
         }
+        if (isForGraph)
+        {
+            claims.Add(new Claim(TokenTypeClaim, GraphTokenType));
+        }
 
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(claims),
             // Tenant-qualified issuer matching what OIDC discovery advertises (BaseUrl/{tid}/v2.0), so a
             // standard client validating the issuer against discovery accepts the token.
-            Issuer = $"https://topaz.local.dev:8899/{TenantId}/v2.0",
+            Issuer = authority.GetTenantIssuer(TenantId),
             Audience = audience,
             NotBefore = DateTime.UtcNow,
             IssuedAt = DateTime.UtcNow,
@@ -126,7 +149,7 @@ public static class JwtHelper
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(claims),
-            Issuer = $"https://topaz.local.dev:8899/{tenant}/v2.0",
+            Issuer = EntraAuthority.Current.GetTenantIssuer(tenant),
             Audience = resource,
             NotBefore = DateTime.UtcNow,
             IssuedAt = DateTime.UtcNow,

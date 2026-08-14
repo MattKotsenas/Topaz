@@ -18,7 +18,7 @@ internal static class DeviceLoginHtmlBuilder
 
     private const string LogoHtml = """
         <div class="text-center mb-3">
-            <img src="https://topaz.local.dev:8899/topaz-logo.png"
+            <img src="/topaz-logo.png"
                  alt="Topaz"
                  style="max-height: 128px; width: auto;"
                  onerror="this.style.display='none'" />

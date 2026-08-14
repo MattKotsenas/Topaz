@@ -9,6 +9,7 @@
       <ProjectReference Include="..\Services\Topaz.Service.Entra\Topaz.Service.Entra.csproj" />
       <ProjectReference Include="..\Services\Topaz.Service.ResourceGroup\Topaz.Service.ResourceGroup.csproj" />
       <ProjectReference Include="..\Services\Topaz.Service.Shared\Topaz.Service.Shared.csproj" />
+      <ProjectReference Include="..\Topaz.Identity\Topaz.Identity.csproj" />
     </ItemGroup>
 
     <ItemGroup>

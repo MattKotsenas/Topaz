@@ -18,7 +18,7 @@ internal sealed class KeyVaultAuthorizationChecker(Pipeline eventPipeline, ITopa
     /// <summary>
     /// Builds the WWW-Authenticate challenge header value for a request that arrived without a Bearer token.
     /// The Azure SDK uses this to discover the token endpoint and then retries with a token.
-    /// The authorization URL points to Topaz's ARM token endpoint (port 8899) so that
+    /// The authorization URL points to the configured Entra authority so that
     /// both MSAL v2 and old go-autorest v1 clients can acquire a token and retry.
     /// The resource is set to the BASE vault domain (vault name prefix stripped), matching
     /// real Azure's pattern where resource="https://vault.azure.net" rather than
@@ -35,7 +35,7 @@ internal sealed class KeyVaultAuthorizationChecker(Pipeline eventPipeline, ITopa
         // Strip the vault-name label: "myvault.vault.topaz.local.dev:8898" → "vault.topaz.local.dev:8898"
         var firstDot = host.IndexOf('.');
         var baseDomain = firstDot >= 0 ? host[(firstDot + 1)..] : host;
-        return $"Bearer authorization=\"https://topaz.local.dev:{GlobalSettings.DefaultResourceManagerPort}/{GlobalSettings.DefaultTenantId}\"," +
+        return $"Bearer authorization=\"{EntraAuthority.Current.GetEndpoint($"/{GlobalSettings.DefaultTenantId}")}\"," +
                $" resource=\"https://{baseDomain}\"";
     }
 

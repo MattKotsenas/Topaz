@@ -1,33 +1,38 @@
 using System.Text.Json;
+using Topaz.Identity;
 using Topaz.Shared;
 
 namespace Topaz.CloudEnvironment.Models.Responses;
 
-internal sealed class GetMetadataEndpointResponse
+internal sealed class GetMetadataEndpointResponse(EntraAuthority? configuredAuthority = null)
 {
-    public string ResourceManager => "https://topaz.local.dev:8899";
+    private EntraAuthority Authority { get; } = configuredAuthority ?? EntraAuthority.Current;
 
-    public string ResourceManagerEndpoint => "https://topaz.local.dev:8899";
+    public string ResourceManager => GlobalSettings.DefaultResourceManagerOrigin;
 
-    public string ActiveDirectory => "https://topaz.local.dev:8899";
+    public string ResourceManagerEndpoint => GlobalSettings.DefaultResourceManagerOrigin;
 
-    public string ActiveDirectoryEndpoint => "https://topaz.local.dev:8899";
+    public string ActiveDirectory => Authority.Origin;
 
-    public string ActiveDirectoryResourceId => "https://topaz.local.dev:8899";
+    public string ActiveDirectoryEndpoint => Authority.Origin;
 
-    public string ActiveDirectoryGraphResourceId => "https://topaz.local.dev:8899";
+    public string ActiveDirectoryResourceId => Authority.Origin;
 
-    public string MicrosoftGraphResourceId => "https://topaz.local.dev:8899/";
+    // Graph resource audiences remain on the local control-plane origin; only Entra login endpoints
+    // follow the configurable identity authority.
+    public string ActiveDirectoryGraphResourceId => GlobalSettings.DefaultResourceManagerOrigin;
+
+    public string MicrosoftGraphResourceId => $"{GlobalSettings.DefaultResourceManagerOrigin}/";
 
     public IReadOnlyDictionary<string, string> Endpoints => new Dictionary<string, string>
     {
-        { "resourceManager", "https://topaz.local.dev:8899" },
-        { "resourceManagerEndpoint", "https://topaz.local.dev:8899" },
-        { "activeDirectory", "https://topaz.local.dev:8899" },
-        { "activeDirectoryEndpoint", "https://topaz.local.dev:8899" },
-        { "activeDirectoryResourceId", "https://topaz.local.dev:8899" },
-        { "activeDirectoryGraphResourceId", "https://topaz.local.dev:8899" },
-        { "microsoftGraphResourceId", "https://topaz.local.dev:8899/" }
+        { "resourceManager", GlobalSettings.DefaultResourceManagerOrigin },
+        { "resourceManagerEndpoint", GlobalSettings.DefaultResourceManagerOrigin },
+        { "activeDirectory", Authority.Origin },
+        { "activeDirectoryEndpoint", Authority.Origin },
+        { "activeDirectoryResourceId", Authority.Origin },
+        { "activeDirectoryGraphResourceId", GlobalSettings.DefaultResourceManagerOrigin },
+        { "microsoftGraphResourceId", $"{GlobalSettings.DefaultResourceManagerOrigin}/" }
     };
     
     public IReadOnlyDictionary<string, string> Suffixes => new Dictionary<string, string>
@@ -50,11 +55,11 @@ internal sealed class GetMetadataEndpointResponse
 
     public string Name => "public";
 
-    public AuthenticationMetadata Authentication => new AuthenticationMetadata();
+    public AuthenticationMetadata Authentication => new(Authority);
 
-    internal class AuthenticationMetadata
+    internal class AuthenticationMetadata(EntraAuthority authority)
     {
-        public string LoginEndpoint => "https://topaz.local.dev:8899/";
+        public string LoginEndpoint => authority.GetEndpoint("/");
 
         public string IdentityProvider => "AAD";
 
