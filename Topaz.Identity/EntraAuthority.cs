@@ -43,8 +43,15 @@ internal sealed class EntraAuthority
 
     public string GetTenantIssuer(string tenantId)
     {
+        return $"{Origin}/{NormalizeTenantId(tenantId)}/v2.0";
+    }
+
+    public static string NormalizeTenantId(string tenantId)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
-        return $"{Origin}/{tenantId}/v2.0";
+        return Guid.TryParse(tenantId, out var parsed)
+            ? parsed.ToString("D")
+            : tenantId;
     }
 
     public string GetEndpoint(string path)

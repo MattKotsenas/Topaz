@@ -149,7 +149,7 @@ public class EntraJwksTests
         // The issuer OIDC discovery advertises for the tenant is BaseUrl/{tid}/v2.0; the access-token iss must
         // match it (it was previously the bare BaseUrl, which standard ValidateIssuer clients would reject).
         Assert.That(token.Issuer,
-            Is.EqualTo("https://topaz.local.dev:8899/50717675-3E5E-4A1E-8CB5-C62D8BE8CA48/v2.0"));
+            Is.EqualTo("https://topaz.local.dev:8899/50717675-3e5e-4a1e-8cb5-c62d8be8ca48/v2.0"));
     }
 
     [Test]

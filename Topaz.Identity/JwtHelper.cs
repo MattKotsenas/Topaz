@@ -9,7 +9,7 @@ public static class JwtHelper
     internal const string TokenTypeClaim = "topaz_token_type";
     internal const string GraphTokenType = "graph";
 
-    private const string TenantId = "50717675-3E5E-4A1E-8CB5-C62D8BE8CA48";
+    private const string TenantId = "50717675-3e5e-4a1e-8cb5-c62d8be8ca48";
 
     private static readonly byte[] SecretKey =
         "yD1sMV1WcwVjSfNUxxLNfVHn5sbqD056LwOnkXCkIDnWkXcrg95plLQ3T1tvinLAnuNNiRRZrKyUvs6YzZnJ/A=="u8.ToArray();
@@ -134,7 +134,9 @@ public static class JwtHelper
     public static string CreateManagedIdentityToken(string principalId, string clientId, string resource,
         string armResourceId, string? tenantId = null)
     {
-        var tenant = string.IsNullOrWhiteSpace(tenantId) ? TenantId : tenantId;
+        var tenant = string.IsNullOrWhiteSpace(tenantId)
+            ? TenantId
+            : EntraAuthority.NormalizeTenantId(tenantId);
         var claims = new List<Claim>
         {
             new("sub", principalId),

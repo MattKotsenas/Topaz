@@ -31,7 +31,7 @@ public class EntraAuthorityTests
         {
             Assert.That(
                 root.GetProperty("issuer").GetString(),
-                Is.EqualTo("https://entra.azure.test:8899/50717675-3E5E-4A1E-8CB5-C62D8BE8CA48/v2.0"));
+                Is.EqualTo("https://entra.azure.test:8899/50717675-3e5e-4a1e-8cb5-c62d8be8ca48/v2.0"));
             Assert.That(
                 root.GetProperty("authorization_endpoint").GetString(),
                 Is.EqualTo("https://entra.azure.test:8899/organizations/oauth2/v2.0/authorize"));
@@ -86,9 +86,52 @@ public class EntraAuthorityTests
         {
             Assert.That(jwt.Audiences.Single(), Is.EqualTo("https://management.azure.com/"));
             Assert.That(
+                jwt.Claims.Single(claim => claim.Type == "tid").Value,
+                Is.EqualTo("50717675-3e5e-4a1e-8cb5-c62d8be8ca48"));
+            Assert.That(
                 jwt.Issuer,
                 Is.EqualTo(
-                    "https://entra.azure.test:8899/50717675-3E5E-4A1E-8CB5-C62D8BE8CA48/v2.0"));
+                    "https://entra.azure.test:8899/50717675-3e5e-4a1e-8cb5-c62d8be8ca48/v2.0"));
+        });
+    }
+
+    [TestCase(
+        "50717675-3E5E-4A1E-8CB5-C62D8BE8CA48",
+        "https://entra.azure.test:8899/50717675-3e5e-4a1e-8cb5-c62d8be8ca48/v2.0")]
+    [TestCase(
+        "50717675-3e5e-4a1e-8cb5-c62d8be8ca48",
+        "https://entra.azure.test:8899/50717675-3e5e-4a1e-8cb5-c62d8be8ca48/v2.0")]
+    [TestCase(
+        "507176753e5e4a1e8cb5c62d8be8ca48",
+        "https://entra.azure.test:8899/50717675-3e5e-4a1e-8cb5-c62d8be8ca48/v2.0")]
+    [TestCase(
+        "organizations",
+        "https://entra.azure.test:8899/organizations/v2.0")]
+    public void Tenant_issuer_canonicalizes_Guids_and_preserves_aliases(
+        string tenant,
+        string expectedIssuer)
+    {
+        Assert.That(ReservedAuthority.GetTenantIssuer(tenant), Is.EqualTo(expectedIssuer));
+    }
+
+    [Test]
+    public void Managed_identity_token_issuer_and_tid_use_the_same_canonical_tenant()
+    {
+        var token = JwtHelper.CreateManagedIdentityToken(
+            Guid.NewGuid().ToString(),
+            Guid.NewGuid().ToString(),
+            "https://storage.azure.com/",
+            "/subscriptions/s/resourceGroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/mi",
+            "50717675-3E5E-4A1E-8CB5-C62D8BE8CA48");
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
+        var tenant = jwt.Claims.Single(claim => claim.Type == "tid").Value;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(tenant, Is.EqualTo("50717675-3e5e-4a1e-8cb5-c62d8be8ca48"));
+            Assert.That(
+                jwt.Issuer,
+                Is.EqualTo($"https://topaz.local.dev:8899/{tenant}/v2.0"));
         });
     }
 
