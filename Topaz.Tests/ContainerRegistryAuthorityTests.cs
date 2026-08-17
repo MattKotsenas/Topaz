@@ -18,6 +18,16 @@ public class ContainerRegistryAuthorityTests
     }
 
     [Test]
+    public void Registry_name_is_canonicalized_for_the_login_server()
+    {
+        var authority = ContainerRegistryAuthority.Create("azurecr.test");
+
+        Assert.That(
+            authority.GetLoginServer("SampleAcr01"),
+            Is.EqualTo("sampleacr01.azurecr.test"));
+    }
+
+    [Test]
     public void Default_suffix_returns_local_login_server()
     {
         var authority = ContainerRegistryAuthority.Create(null);

@@ -58,7 +58,7 @@ internal sealed class ContainerRegistryAuthority
     public string GetLoginServer(string registryName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(registryName);
-        return $"{registryName}.{_loginServerSuffix}";
+        return $"{registryName.ToLowerInvariant()}.{_loginServerSuffix}";
     }
 
     public string GetTagMetadataRegistry(string registryName)
