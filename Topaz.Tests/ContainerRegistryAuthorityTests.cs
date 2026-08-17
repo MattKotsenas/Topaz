@@ -111,6 +111,54 @@ public class ContainerRegistryAuthorityTests
     }
 
     [Test]
+    public void Configured_registry_name_boundary_is_case_insensitive()
+    {
+        var boundary = ContainerRegistryNameBoundary.Create("SampleAcr01");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(boundary.Allows("sampleacr01"), Is.True);
+            Assert.That(boundary.Allows("otherregistry"), Is.False);
+            Assert.That(
+                boundary.MismatchReason("otherregistry"),
+                Does.Contain("SampleAcr01"));
+        });
+    }
+
+    [Test]
+    public void Absent_registry_name_boundary_allows_standalone_registries()
+    {
+        Assert.That(
+            ContainerRegistryNameBoundary.Create(null)
+                .Allows("anyregistry"),
+            Is.True);
+    }
+
+    [Test]
+    public void Deployment_template_finds_mismatched_registry_case_insensitively()
+    {
+        var boundary = ContainerRegistryNameBoundary.Create("sampleacr01");
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "resources": [
+                {
+                  "type": "microsoft.containerregistry/registries",
+                  "name": "otherregistry"
+                }
+              ]
+            }
+            """);
+
+        Assert.That(
+            boundary.TryFindMismatchedRegistry(
+                document.RootElement,
+                out var registryName),
+            Is.True);
+        Assert.That(registryName, Is.EqualTo("otherregistry"));
+    }
+
+    [Test]
     [NonParallelizable]
     public void Persisted_registry_login_server_is_projected_at_startup()
     {

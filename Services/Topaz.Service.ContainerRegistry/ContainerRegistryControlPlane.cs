@@ -25,6 +25,7 @@ internal sealed class ContainerRegistryControlPlane(
     private const string InvalidRegistryNameCode = "RegistryNameInvalid";
     private const string InvalidRegistryNameMessageTemplate =
         "The registry name '{0}' is invalid. A registry name must be between 5-50 alphanumeric characters.";
+    private const string RegistryNameMismatchCode = "RegistryNameMismatch";
 
     private const string MissingLocationCode = "LocationRequired";
     private const string MissingLocationMessage = "The 'location' property is required when creating a container registry.";
@@ -77,6 +78,16 @@ internal sealed class ContainerRegistryControlPlane(
                 OperationResult.Failed, null,
                 string.Format(InvalidRegistryNameMessageTemplate, registryName),
                 InvalidRegistryNameCode);
+        }
+
+        var registryNameBoundary = ContainerRegistryNameBoundary.Current;
+        if (!registryNameBoundary.Allows(registryName))
+        {
+            return new ControlPlaneOperationResult<ContainerRegistryResource>(
+                OperationResult.Failed,
+                null,
+                registryNameBoundary.MismatchReason(registryName),
+                RegistryNameMismatchCode);
         }
 
         var resourceGroupOperation = resourceGroupControlPlane.Get(subscriptionIdentifier, resourceGroupIdentifier);
@@ -271,7 +282,11 @@ internal sealed class ContainerRegistryControlPlane(
             "Executing {0}: registry={1}, subscription={2}",
             nameof(IsNameAvailable), registryName, subscriptionIdentifier.Value);
 
-        if (!IsNameValid(registryName)) return false;
+        if (!IsNameValid(registryName)
+            || !ContainerRegistryNameBoundary.Current.Allows(registryName))
+        {
+            return false;
+        }
 
         if (resourceGroupIdentifier != null)
         {
@@ -343,7 +358,7 @@ internal sealed class ContainerRegistryControlPlane(
 
     private static bool IsNameValid(string name)
     {
-        return name.Length is >= 5 and <= 50 && name.All(char.IsLetterOrDigit);
+        return ContainerRegistryNameBoundary.IsValidName(name);
     }
 
     /// <summary>
@@ -711,7 +726,10 @@ internal sealed class ContainerRegistryControlPlane(
                         subscriptionIdentifier, resourceGroupIdentifier, runId, registryName, RunsSubresource, resource);
                 }
             }
-            catch { /* best effort */ }
+            catch (Exception recoveryException)
+            {
+                logger.LogError(recoveryException);
+            }
         }
     }
 

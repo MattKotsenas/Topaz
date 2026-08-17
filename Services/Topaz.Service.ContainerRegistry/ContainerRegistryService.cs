@@ -79,6 +79,7 @@ public sealed class ContainerRegistryService(Pipeline eventPipeline, ITopazLogge
     internal static void InitializeAuthority()
     {
         _ = ContainerRegistryAuthority.Initialize();
+        _ = ContainerRegistryNameBoundary.Initialize();
     }
 
     private AcrDataPlane AcrDataPlane() =>

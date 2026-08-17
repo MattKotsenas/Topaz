@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
+using Topaz.Service.ContainerRegistry;
 using Topaz.Service.ResourceGroup;
 using Topaz.Service.ResourceManager.Deployment;
 using Topaz.Service.ResourceManager.Models.Requests;
@@ -76,6 +77,22 @@ public sealed class CreateOrUpdateDeploymentEndpoint(
         if (request?.Properties == null || string.IsNullOrWhiteSpace(request.Properties.Mode))
         {
             response.StatusCode = HttpStatusCode.BadRequest;
+            return;
+        }
+
+        var registryBoundary = ContainerRegistryNameBoundary.Current;
+        var template = JsonSerializer.SerializeToElement(
+            request.Properties.Template,
+            GlobalSettings.JsonOptions);
+        if (registryBoundary.TryFindMismatchedRegistry(
+                template,
+                out var mismatchedRegistryName))
+        {
+            response.CreateErrorResponse(
+                "RegistryNameMismatch",
+                registryBoundary.MismatchReason(
+                    mismatchedRegistryName),
+                HttpStatusCode.BadRequest);
             return;
         }
 

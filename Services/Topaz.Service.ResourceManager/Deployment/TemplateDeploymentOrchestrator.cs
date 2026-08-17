@@ -335,12 +335,20 @@ public sealed class TemplateDeploymentOrchestrator(
             var resourceName = resource.Name?.Value ?? genericResource.Name ?? string.Empty;
             genericResource = NormalizeGenericResource(genericResource, resource, templateDeployment, resourceType, resourceName);
 
-            switch (resourceType)
+            if (string.Equals(
+                    resourceType,
+                    "Microsoft.ContainerRegistry/registries",
+                    StringComparison.OrdinalIgnoreCase))
             {
-                case "Microsoft.ContainerRegistry/registries":
-                    controlPlane = ContainerRegistryControlPlane.New(eventPipeline, logger);
-                    break;
-                case "Microsoft.KeyVault/vaults":
+                controlPlane = ContainerRegistryControlPlane.New(
+                    eventPipeline,
+                    logger);
+            }
+            else
+            {
+                switch (resourceType)
+                {
+                    case "Microsoft.KeyVault/vaults":
                     controlPlane = KeyVaultControlPlane.New(eventPipeline, logger);
                     break;
                 case "Microsoft.Network/virtualNetworks":
@@ -412,6 +420,7 @@ public sealed class TemplateDeploymentOrchestrator(
                         "resource passthrough so it remains retrievable.");
                     new GenericResourceProvider(logger).Persist(genericResource);
                     break;
+                }
             }
 
             var operationStart = DateTimeOffset.UtcNow;
