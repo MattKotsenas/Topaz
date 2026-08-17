@@ -1,5 +1,10 @@
+using Azure.Core;
+using Topaz.ResourceManager;
 using Topaz.Shared;
 using Topaz.Service.ContainerRegistry;
+using Topaz.Service.ContainerRegistry.Models;
+using Topaz.Service.ContainerRegistry.Models.Responses;
+using Topaz.Service.Shared.Domain;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -156,6 +161,66 @@ public class ContainerRegistryAuthorityTests
                 out var registryName),
             Is.True);
         Assert.That(registryName, Is.EqualTo("otherregistry"));
+    }
+
+    [Test]
+    public void Deployment_template_ignores_non_resource_type_and_name_objects()
+    {
+        var boundary = ContainerRegistryNameBoundary.Create("sampleacr01");
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "variables": {
+                "descriptor": {
+                  "type": "Microsoft.ContainerRegistry/registries",
+                  "name": "otherregistry"
+                }
+              },
+              "resources": []
+            }
+            """);
+
+        Assert.That(
+            boundary.TryFindMismatchedRegistry(
+                document.RootElement,
+                out _),
+            Is.False);
+    }
+
+    [Test]
+    public void Registry_ARM_response_omits_admin_credentials()
+    {
+        const string Password = "registry-secret";
+        var resource = new ContainerRegistryResource(
+            SubscriptionIdentifier.From(Guid.NewGuid()),
+            ResourceGroupIdentifier.From("rg"),
+            "sampleacr01",
+            new AzureLocation("westus"),
+            tags: null,
+            new ResourceSku { Name = "Basic" },
+            new ContainerRegistryResourceProperties
+            {
+                LoginServer = "sampleacr01.cr.topaz.local.dev:8892",
+                AdminUserEnabled = true,
+                AdminUsername = "sampleacr01",
+                AdminPassword = Password,
+                AdminPassword2 = Password,
+            });
+
+        var json =
+            ListContainerRegistriesResponse.ContainerRegistry
+                .From(resource)
+                .ToString();
+        using var response = JsonDocument.Parse(json);
+
+        Assert.That(json, Does.Not.Contain(Password));
+        Assert.That(json, Does.Not.Contain("adminPassword"));
+        Assert.That(
+            response.RootElement
+                .GetProperty("properties")
+                .GetProperty("adminUserEnabled")
+                .GetBoolean(),
+            Is.True);
     }
 
     [Test]

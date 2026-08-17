@@ -153,7 +153,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint), "[{0}] {1}{2}", method, path, query);
 
         var (response, requestError) = await CallEndpoint(endpoint, context);
-        // Ensure Content is never null — a missing body returns empty string so downstream
+        // Ensure Content is never null - a missing body returns empty string so downstream
         // code can always call ReadAsByteArrayAsync() without a NullReferenceException.
         response.Content ??= new StringContent(string.Empty);
 
@@ -161,9 +161,6 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             method, path, query.Value, port, endpoint.GetType().Name, endpoint.ProviderNamespace,
             (int)response.StatusCode, requestError, traceParent);
         var responseBytes = await response.Content.ReadAsByteArrayAsync();
-        var textResponse = System.Text.Encoding.UTF8.GetString(responseBytes);
-
-        logger.LogInformation($"[{method}][{context.Request.Host}:{path}{query}][{response.StatusCode}] {textResponse}");
         
         context.Response.StatusCode = (int)response.StatusCode;
         
@@ -198,7 +195,10 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
                 }
                 return;
             case HttpStatusCode.InternalServerError:
-                logger.LogError(textResponse);
+                logger.LogError(
+                    requestError
+                    ?? new InvalidOperationException(
+                        $"Endpoint {endpoint.GetType().Name} returned HTTP 500."));
                 break;
         }
 
@@ -217,23 +217,9 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
     private async Task<(HttpResponseMessage Response, Exception? Error)> CallEndpoint(IEndpointDefinition endpoint, HttpContext context)
     {
         var response = new HttpResponseMessage();
-        string? requestBodyContent = null;
 
         try
         {
-            // Enable buffering and read body content for potential error logging
-            context.Request.EnableBuffering();
-            
-            if (context.Request.Body.CanSeek && context.Request.ContentLength > 0)
-            {
-                using (var reader = new StreamReader(context.Request.Body, leaveOpen: true))
-                {
-                    requestBodyContent = await reader.ReadToEndAsync();
-                }
-                
-                context.Request.Body.Position = 0; // Reset for endpoint to read
-            }
-            
             var (isAuthorized, principal) = endpoint.Authorize(context, response, _authorizationAdapter);
 
             if (!isAuthorized)
@@ -278,12 +264,6 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         }
         catch (JsonException ex)
         {
-            // Log the cached request body if available
-            if (!string.IsNullOrEmpty(requestBodyContent))
-            {
-                logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint), "Request body: {0}", requestBodyContent);
-            }
-            
             response!.Content = new StringContent(ex.Message);
             response.StatusCode = HttpStatusCode.InternalServerError;
             return (response, ex);

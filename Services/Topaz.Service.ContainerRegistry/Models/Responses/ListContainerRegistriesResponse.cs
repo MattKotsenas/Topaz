@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Topaz.ResourceManager;
 using Topaz.Shared;
 
 namespace Topaz.Service.ContainerRegistry.Models.Responses;
@@ -18,6 +19,7 @@ internal sealed class ListContainerRegistriesResponse
         public string? Location { get; init; }
         public IDictionary<string, string>? Tags { get; init; }
         public RegistrySku? Sku { get; init; }
+        public ResourceIdentity? Identity { get; init; }
         public RegistryProperties? Properties { get; init; }
 
         public static ContainerRegistry From(ContainerRegistryResource resource)
@@ -30,6 +32,7 @@ internal sealed class ListContainerRegistriesResponse
                 Location = resource.Location,
                 Tags = resource.Tags,
                 Sku = resource.Sku != null ? new RegistrySku { Name = resource.Sku.Name, Tier = resource.Sku.Name } : null,
+                Identity = resource.Identity,
                 Properties = new RegistryProperties
                 {
                     LoginServer = resource.Properties.LoginServer,
@@ -42,6 +45,11 @@ internal sealed class ListContainerRegistriesResponse
                 }
             };
         }
+
+        public override string ToString() =>
+            System.Text.Json.JsonSerializer.Serialize(
+                this,
+                GlobalSettings.JsonOptions);
     }
 
     public record RegistrySku

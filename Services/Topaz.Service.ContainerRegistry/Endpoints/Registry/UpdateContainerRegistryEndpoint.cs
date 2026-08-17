@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
 using Topaz.Service.ContainerRegistry.Models.Requests;
+using Topaz.Service.ContainerRegistry.Models.Responses;
 using Topaz.Service.Shared;
 using Topaz.Service.Shared.Domain;
 using Topaz.Shared;
@@ -71,6 +72,8 @@ internal sealed class UpdateContainerRegistryEndpoint(Pipeline eventPipeline, IT
             return;
         }
 
-        response.CreateJsonContentResponse(operation.Resource!);
+        response.CreateJsonContentResponse(
+            ListContainerRegistriesResponse.ContainerRegistry.From(
+                operation.Resource!));
     }
 }

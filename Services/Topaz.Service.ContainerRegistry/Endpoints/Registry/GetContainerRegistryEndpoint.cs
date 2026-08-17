@@ -1,7 +1,7 @@
 using System.Net;
-using System.Net.Http.Headers;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
+using Topaz.Service.ContainerRegistry.Models.Responses;
 using Topaz.Service.Shared;
 using Topaz.Service.Shared.Domain;
 using Topaz.Shared;
@@ -44,8 +44,8 @@ internal sealed class GetContainerRegistryEndpoint(Pipeline eventPipeline, ITopa
             return;
         }
 
-        response.StatusCode = HttpStatusCode.OK;
-        response.Content = new StringContent(operation.Resource!.ToString());
-        response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        response.CreateJsonContentResponse(
+            ListContainerRegistriesResponse.ContainerRegistry.From(
+                operation.Resource!));
     }
 }

@@ -60,41 +60,35 @@ internal sealed class ContainerRegistryNameBoundary
         + $"'{_configuredName}'.";
 
     public bool TryFindMismatchedRegistry(
-        JsonElement element,
+        JsonElement scope,
         out string registryName)
     {
-        if (element.ValueKind == JsonValueKind.Object)
+        if (scope.ValueKind != JsonValueKind.Object
+            || !TryGetProperty(
+                scope,
+                "resources",
+                out var resources)
+            || resources.ValueKind != JsonValueKind.Array)
         {
-            string? type = null;
-            string? name = null;
-            foreach (var property in element.EnumerateObject())
-            {
-                if (property.Value.ValueKind == JsonValueKind.String)
-                {
-                    if (string.Equals(
-                            property.Name,
-                            "type",
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        type = property.Value.GetString();
-                    }
-                    else if (string.Equals(
-                                 property.Name,
-                                 "name",
-                                 StringComparison.OrdinalIgnoreCase))
-                    {
-                        name = property.Value.GetString();
-                    }
-                }
+            registryName = string.Empty;
+            return false;
+        }
 
-                if (TryFindMismatchedRegistry(
-                        property.Value,
-                        out registryName))
-                {
-                    return true;
-                }
+        foreach (var resource in resources.EnumerateArray())
+        {
+            if (resource.ValueKind != JsonValueKind.Object)
+            {
+                continue;
             }
 
+            var type = TryGetProperty(resource, "type", out var typeNode)
+                && typeNode.ValueKind == JsonValueKind.String
+                    ? typeNode.GetString()
+                    : null;
+            var name = TryGetProperty(resource, "name", out var nameNode)
+                && nameNode.ValueKind == JsonValueKind.String
+                    ? nameNode.GetString()
+                    : null;
             if (string.Equals(
                     type,
                     "Microsoft.ContainerRegistry/registries",
@@ -106,19 +100,48 @@ internal sealed class ContainerRegistryNameBoundary
                 registryName = name;
                 return true;
             }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in element.EnumerateArray())
+
+            if (TryFindMismatchedRegistry(resource, out registryName))
             {
-                if (TryFindMismatchedRegistry(item, out registryName))
-                {
-                    return true;
-                }
+                return true;
+            }
+
+            if (TryGetProperty(resource, "properties", out var properties)
+                && properties.ValueKind == JsonValueKind.Object
+                && TryGetProperty(
+                    properties,
+                    "template",
+                    out var nestedTemplate)
+                && TryFindMismatchedRegistry(
+                    nestedTemplate,
+                    out registryName))
+            {
+                return true;
             }
         }
 
         registryName = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetProperty(
+        JsonElement value,
+        string name,
+        out JsonElement propertyValue)
+    {
+        foreach (var property in value.EnumerateObject())
+        {
+            if (string.Equals(
+                    property.Name,
+                    name,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                propertyValue = property.Value;
+                return true;
+            }
+        }
+
+        propertyValue = default;
         return false;
     }
 }

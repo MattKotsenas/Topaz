@@ -1,9 +1,9 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
 using Topaz.Service.ContainerRegistry.Models.Requests;
+using Topaz.Service.ContainerRegistry.Models.Responses;
 using Topaz.Service.Shared;
 using Topaz.Service.Shared.Domain;
 using Topaz.Shared;
@@ -63,10 +63,12 @@ internal sealed class CreateOrUpdateContainerRegistryEndpoint(Pipeline eventPipe
             return;
         }
 
-        response.StatusCode = operation.Result == OperationResult.Created
+        var statusCode = operation.Result == OperationResult.Created
             ? HttpStatusCode.Created
             : HttpStatusCode.OK;
-        response.Content = new StringContent(operation.Resource!.ToString());
-        response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        response.CreateJsonContentResponse(
+            ListContainerRegistriesResponse.ContainerRegistry.From(
+                operation.Resource!),
+            statusCode);
     }
 }

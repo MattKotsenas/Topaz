@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using Microsoft.AspNetCore.Http;
 using Topaz.EventPipeline;
+using Topaz.Service.ContainerRegistry.Models.Responses;
 using Topaz.Service.Shared;
 using Topaz.Service.Shared.Domain;
 using Topaz.Shared;
@@ -51,10 +52,15 @@ internal sealed class DeleteContainerRegistryEndpoint(Pipeline eventPipeline, IT
             : HttpStatusCode.OK;
 
         if (operation.Resource != null)
-            response.Content = new StringContent(operation.Resource.ToString());
+            response.CreateJsonContentResponse(
+                ListContainerRegistriesResponse.ContainerRegistry.From(
+                    operation.Resource),
+                response.StatusCode);
         else
+        {
             response.Content = new StringContent(string.Empty);
-
-        response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            response.Content.Headers.ContentType =
+                new MediaTypeHeaderValue("application/json");
+        }
     }
 }
