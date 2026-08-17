@@ -32,9 +32,14 @@ class TopazResourceHelpers:
     """Static helpers that return correct endpoint URLs and connection strings."""
 
     @staticmethod
+    def get_default_container_registry_login_server(registry_name: str) -> str:
+        """Returns the default standalone Container Registry login server."""
+        return f"{registry_name}.cr.topaz.local.dev:{CONTAINER_REGISTRY_PORT}"
+
+    @staticmethod
     def get_container_registry_login_server(registry_name: str) -> str:
-        """Returns the Container Registry login server host:port string."""
-        return f"{registry_name.lower()}.cr.topaz.local.dev:{CONTAINER_REGISTRY_PORT}"
+        """Compatibility alias for the default standalone login server."""
+        return TopazResourceHelpers.get_default_container_registry_login_server(registry_name)
 
     @staticmethod
     def get_key_vault_endpoint(vault_name: str) -> str:
@@ -152,11 +157,6 @@ class TopazResourceHelpers:
             f"SharedAccessKey=SAS_KEY_VALUE;"
             f"UseDevelopmentEmulator=true;"
         )
-
-    @staticmethod
-    def get_container_registry_login_server(registry_name: str) -> str:
-        """Returns the Container Registry login server host:port string."""
-        return f"{registry_name}.cr.topaz.local.dev:{CONTAINER_REGISTRY_PORT}"
 
     @staticmethod
     def get_web_site_default_host_name(site_name: str) -> str:

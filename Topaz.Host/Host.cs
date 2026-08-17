@@ -96,7 +96,11 @@ public class Host
         Console.WriteLine($"  Azure emulator  •  v{ThisAssembly.AssemblyInformationalVersion}");
         Console.WriteLine();
 
+        ContainerRegistryService.InitializeAuthority();
         Bootstrap();
+        using var registryMetadataUpdate =
+            ContainerRegistryService.StageRegistryMetadataUpdate(
+                GlobalSettings.MainEmulatorDirectory);
 
         // Start request tracing if enabled (TOPAZ_OTEL_TRACES names a writable trace-file path). No-op/zero-
         // cost otherwise. Disposed in the using scope (method exit on shutdown) so the listener + writer are
@@ -210,7 +214,17 @@ public class Host
             HostState.HttpsConnectProxyAvailable = true;
         }
 
-        await CreateWebserverForHttpEndpointsAsync([.. httpEndpoints], idFactory, cancellationToken);
+        registryMetadataUpdate.Apply();
+        try
+        {
+            await CreateWebserverForHttpEndpointsAsync([.. httpEndpoints], idFactory, cancellationToken);
+        }
+        catch
+        {
+            registryMetadataUpdate.Rollback();
+            throw;
+        }
+        registryMetadataUpdate.Commit();
         CreateAmqpListenersForAmpqEndpoints([.. amqpEndpoints]);
 
         var backgroundServices = new ITopazBackgroundService[]

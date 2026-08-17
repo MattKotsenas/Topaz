@@ -603,7 +603,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
 
         using var http = new HttpClient();
 
@@ -662,7 +662,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
 
         // Push a minimal manifest via HttpClient to seed a repository.
         using var http = new HttpClient();
@@ -716,7 +716,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         const string repoName = "tag-test-app";
@@ -773,7 +773,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         const string repoName = "pagination-app";
@@ -825,7 +825,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         const string repoName = "delete-manifest-app";
@@ -869,7 +869,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         const string repoName = "delete-by-digest-app";
@@ -942,7 +942,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         // Act — delete a manifest that was never pushed
@@ -966,7 +966,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         const string repoName = "head-manifest-app";
@@ -1018,7 +1018,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         const string repoName = "head-manifest-digest-app";
@@ -1062,7 +1062,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         // Act — HEAD a manifest that was never pushed
@@ -1087,7 +1087,7 @@ public class ContainerRegistryTests
             new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
-        var host = TopazResourceHelpers.GetContainerRegistryLoginServer(RegistryName);
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
         using var http = new HttpClient();
 
         const string repoName = "delete-blob-app";

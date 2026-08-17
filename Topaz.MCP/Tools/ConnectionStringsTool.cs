@@ -106,7 +106,9 @@ public sealed class ConnectionStringsTool
                 {
                     ResourceGroup = resourceGroup.Data.Name,
                     RegistryName = acr.Data.Name,
-                    LoginServer = TopazResourceHelpers.GetContainerRegistryLoginServer(acr.Data.Name),
+                    LoginServer = acr.Data.LoginServer
+                        ?? throw new InvalidOperationException(
+                            "The Container Registry response did not include a login server."),
                 });
             }
 

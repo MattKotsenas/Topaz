@@ -3,7 +3,6 @@ using Spectre.Console;
 using Spectre.Console.Cli;
 using Topaz.CLI.Infrastructure;
 using Topaz.Documentation.Command;
-using Topaz.Shared;
 
 namespace Topaz.Service.ContainerRegistry.Commands;
 
@@ -16,7 +15,14 @@ public sealed class ListRepositoriesCommand(HttpClient httpClient)
 
     protected override async Task<int> ExecuteAsync(CommandContext context, ListRepositoriesCommandSettings settings, CancellationToken cancellationToken)
     {
-        var url = $"https://{settings.Registry}.azurecr.topaz.local.dev:{GlobalSettings.ContainerRegistryPort}/acr/v1/_catalog";
+        var loginServer = await ResolveContainerRegistryLoginServerAsync(
+            settings.SubscriptionId!,
+            settings.ResourceGroup!,
+            settings.Registry!,
+            cancellationToken);
+        if (loginServer is null) return 1;
+
+        var url = $"https://{loginServer}/acr/v1/_catalog";
         var (success, body) = await GetAsync(url);
         if (!success) return 1;
         AnsiConsole.WriteLine(body);

@@ -58,7 +58,9 @@ public sealed class CreateContainerRegistryTool
             .CreateOrUpdateAsync(WaitUntil.Completed, registryName, data)
             .ConfigureAwait(false);
 
-        var loginServer = TopazResourceHelpers.GetContainerRegistryLoginServer(registryName);
+        var loginServer = registry.Value.Data.LoginServer
+            ?? throw new InvalidOperationException(
+                "The Container Registry response did not include a login server.");
 
         if (!adminUserEnabled)
         {

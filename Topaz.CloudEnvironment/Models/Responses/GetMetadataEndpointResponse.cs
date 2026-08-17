@@ -38,7 +38,7 @@ internal sealed class GetMetadataEndpointResponse(EntraAuthority? configuredAuth
     public IReadOnlyDictionary<string, string> Suffixes => new Dictionary<string, string>
     {
         { "azureDataLakeStoreFileSystem", "datalake.topaz.local.dev" },
-        { "acrLoginServer", "cr.topaz.local.dev" },
+        { "acrLoginServer", GlobalSettings.ContainerRegistryLoginDnsSuffix },
         { "sqlServerHostname", "sql.topaz.local.dev" },
         { "azureDataLakeAnalyticsCatalogAndJob", "analytics.topaz.local.dev" },
         { "keyVaultDns", "vault.topaz.local.dev" },

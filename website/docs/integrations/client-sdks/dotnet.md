@@ -263,7 +263,12 @@ A static class that generates service endpoint URIs and connection strings for e
 | `GetServiceBusConnectionStringWithTls(string serviceBusNamespaceName)` | `string` | Returns an AMQPS (port 5671) connection string — use this with MassTransit or any client that requires TLS without the development-emulator flag. |
 | `GetServiceBusConnectionStringForManagement(string serviceBusNamespaceName)` | `string` | Returns a connection string for management-plane operations on a Service Bus namespace. |
 | `GetEventHubConnectionString(string eventHubNamespaceName)` | `string` | Returns an AMQP connection string for an Event Hub namespace. Sets `UseDevelopmentEmulator=true`. |
-| `GetContainerRegistryLoginServer(string registryName)` | `string` | Returns the `host:port` login server string for a Container Registry instance (e.g. `myregistry.cr.topaz.local.dev:8892`). Pass this to `docker login` or the ACR SDK. |
+| `GetDefaultContainerRegistryLoginServer(string registryName)` | `string` | Returns the built-in default login server for a Container Registry instance, such as `myregistry.cr.topaz.local.dev:8892`. When the host publishes a configured authority, use the `loginServer` returned by ARM. |
+
+Set `TOPAZ_CONTAINER_REGISTRY_LOGIN_SERVER_AUTHORITY_SUFFIX` before starting the host to
+publish a different login-server authority suffix in `host[:port]` form, such as
+`azurecr.test`. The host rejects schemes, paths, blank values, invalid DNS labels, and
+ports outside `1-65535`.
 
 ---
 

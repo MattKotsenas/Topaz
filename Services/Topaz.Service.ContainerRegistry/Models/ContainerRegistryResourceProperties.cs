@@ -23,7 +23,7 @@ internal sealed class ContainerRegistryResourceProperties
     {
         return new ContainerRegistryResourceProperties
         {
-            LoginServer = $"{registryName}.cr.topaz.local.dev:{GlobalSettings.ContainerRegistryPort}",
+            LoginServer = GlobalSettings.GetContainerRegistryLoginServer(registryName),
             CreationDate = DateTimeOffset.UtcNow,
             ProvisioningState = "Succeeded",
             AdminUserEnabled = request.Properties?.AdminUserEnabled.GetValueOrDefault(false) ?? false,

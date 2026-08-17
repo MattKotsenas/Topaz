@@ -56,7 +56,7 @@ internal sealed class GetTagEndpoint(AcrDataPlane dataPlane, ITopazLogger logger
         var body = JsonSerializer.Serialize(
             new
             {
-                registry = $"{registryName}.azurecr.io",
+                registry = GlobalSettings.GetContainerRegistryTagMetadataRegistry(registryName),
                 imageName = repository,
                 tag = new
                 {

@@ -46,6 +46,17 @@ public static class GlobalSettings
         $"https://{TopazHostname}:{DefaultResourceManagerPort}";
     public const ushort HttpsPort = 443;
     public const ushort ContainerRegistryPort = 8892;
+    public static string DefaultContainerRegistryLoginServerAuthoritySuffix =>
+        $"cr.topaz.local.dev:{ContainerRegistryPort}";
+    internal static string ContainerRegistryLoginDnsSuffix =>
+        ContainerRegistryAuthority.Current.DnsSuffix;
+
+    internal static string GetContainerRegistryLoginServer(string registryName) =>
+        ContainerRegistryAuthority.Current.GetLoginServer(registryName);
+
+    internal static string GetContainerRegistryTagMetadataRegistry(string registryName) =>
+        ContainerRegistryAuthority.Current.GetTagMetadataRegistry(registryName);
+
     public const ushort AmqpTlsConnectionPort = 5671;
     // Unprivileged port for the built-in HTTP CONNECT proxy. Chosen above the registered
     // service port range (1–1023) and unlikely to conflict with common development tools.

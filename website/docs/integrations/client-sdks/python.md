@@ -211,7 +211,7 @@ conn_str  = TopazResourceHelpers.get_storage_connection_string("myaccount", acco
 | `get_service_bus_connection_string_with_tls(namespace_name)` | `str` | Returns an AMQPS (port 5671) connection string — use with MassTransit or clients that require TLS. |
 | `get_service_bus_connection_string_for_management(namespace_name)` | `str` | Returns a connection string for Service Bus management-plane operations. |
 | `get_event_hub_connection_string(namespace_name)` | `str` | Returns an AMQP connection string for an Event Hub namespace (`UseDevelopmentEmulator=true`). |
-| `get_container_registry_login_server(registry_name)` | `str` | Returns the `host:port` login server string for a Container Registry instance (e.g. `myregistry.cr.topaz.local.dev:8892`). |
+| `get_default_container_registry_login_server(registry_name)` | `str` | Returns the built-in default login server for a Container Registry instance, such as `myregistry.cr.topaz.local.dev:8892`. When the host publishes a configured authority, use the `login_server` returned by ARM. |
 | `get_web_site_default_host_name(site_name)` | `str` | Returns the default hostname for an App Service site. |
 
 ---

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Net.Http.Json;
 using Spectre.Console.Cli;
 using Topaz.Shared;
@@ -37,6 +38,38 @@ public abstract class TopazHttpCommand<TSettings>(HttpClient httpClient) : Async
     /// <summary>Base URL for App Configuration data-plane operations.</summary>
     protected string AppConfigDataPlaneUrl(string storeName) =>
         $"https://{storeName}.azconfig.topaz.local.dev:{GlobalSettings.DefaultAppConfigurationPort}";
+
+    protected async Task<string?> ResolveContainerRegistryLoginServerAsync(
+        string subscriptionId,
+        string resourceGroup,
+        string registryName,
+        CancellationToken cancellationToken)
+    {
+        var url =
+            $"{ArmBaseUrl}/subscriptions/{Uri.EscapeDataString(subscriptionId)}"
+            + $"/resourceGroups/{Uri.EscapeDataString(resourceGroup)}"
+            + "/providers/Microsoft.ContainerRegistry/registries/"
+            + $"{Uri.EscapeDataString(registryName)}?api-version=2023-07-01";
+        var (success, body) = await GetAsync(url, cancellationToken);
+        if (!success)
+        {
+            return null;
+        }
+
+        using var response = JsonDocument.Parse(body);
+        var loginServer = response.RootElement
+            .GetProperty("properties")
+            .GetProperty("loginServer")
+            .GetString();
+        if (string.IsNullOrWhiteSpace(loginServer))
+        {
+            await Console.Error.WriteLineAsync(
+                "The Container Registry response did not include a login server.");
+            return null;
+        }
+
+        return loginServer;
+    }
 
     /// <summary>Sends GET; returns (true, responseBody) on success or (false, body) on error.</summary>
     protected async Task<(bool Success, string Body)> GetAsync(

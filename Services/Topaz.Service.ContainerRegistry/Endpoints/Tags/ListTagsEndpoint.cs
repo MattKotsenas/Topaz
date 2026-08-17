@@ -80,7 +80,12 @@ internal sealed class ListTagsEndpoint(AcrDataPlane dataPlane, ITopazLogger logg
                 return new { name = t, digest = manifest?.Digest };
             }).ToArray();
             body = JsonSerializer.Serialize(
-                new { registry = $"{registryName}.azurecr.io", imageName = repository, tags = acrTags },
+                new
+                {
+                    registry = GlobalSettings.GetContainerRegistryTagMetadataRegistry(registryName),
+                    imageName = repository,
+                    tags = acrTags
+                },
                 GlobalSettings.JsonOptions);
         }
         else

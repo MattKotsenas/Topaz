@@ -16,6 +16,7 @@ This guide shows you how to register Topaz as a cloud environment in the Azure C
 
 - Azure CLI installed (`az --version` to verify)
 - Topaz installed and the certificate trusted at the OS level (see [Getting started](../intro.md))
+- `jq` installed when using a custom registry suffix
 
 ## Step 1 — Trust the certificate in Azure CLI
 
@@ -67,6 +68,9 @@ If you prefer not to run the script, follow the [official Azure CLI guide](https
 Topaz emulates Entra ID itself — no real Azure tenant is required. Start the host with an optional default subscription ID so it is created automatically:
 
 ```bash
+# When the host publishes a configured registry authority, choose one no-port suffix before startup.
+# export TOPAZ_CONTAINER_REGISTRY_LOGIN_SERVER_AUTHORITY_SUFFIX=azurecr.test
+
 topaz-host \
   --default-subscription 00000000-0000-0000-0000-000000000001 \
   --log-level Information
@@ -85,10 +89,33 @@ Azure CLI supports custom cloud endpoints (as used by Azure Stack). Topaz regist
 curl -fsSL https://raw.githubusercontent.com/TheCloudTheory/Topaz/refs/heads/main/cloud.json \
   -o cloud.json
 
-# Register the cloud and switch to it
-az cloud register -n Topaz --cloud-config @"cloud.json"
+# Select the default configuration, or project a custom no-port registry suffix.
+cloud_config=cloud.json
+if [ -n "${TOPAZ_CONTAINER_REGISTRY_LOGIN_SERVER_AUTHORITY_SUFFIX:-}" ]; then
+  case "$TOPAZ_CONTAINER_REGISTRY_LOGIN_SERVER_AUTHORITY_SUFFIX" in
+    *:*)
+      echo "Azure CLI cloud registration does not support registry ports." >&2
+      exit 1
+      ;;
+  esac
+  registry_suffix="$TOPAZ_CONTAINER_REGISTRY_LOGIN_SERVER_AUTHORITY_SUFFIX"
+  jq --arg suffix ".$registry_suffix" \
+    '.suffixes.acrLoginServerEndpoint = $suffix' \
+    cloud.json > cloud.configured.json
+  cloud_config=cloud.configured.json
+fi
+
+# Register the cloud once and switch to it.
+az cloud register -n Topaz --cloud-config @"$cloud_config"
 az cloud set -n Topaz
 ```
+
+`cloud.json` describes Topaz's default registry suffix. Azure CLI cloud registration
+cannot carry a registry port, so custom Azure CLI suffixes must omit one. The setting
+only changes the authority Topaz advertises. A composed host must provide matching DNS,
+TLS, and a reverse proxy from `<registry>.<suffix>:443` to Topaz's registry listener on
+port `8892`. The proxy must preserve `<registry>.<suffix>` as the original `Host`
+authority on every request.
 
 Expected output:
 ```
@@ -221,4 +248,3 @@ Resources created in Topaz are unaffected — they remain available the next tim
 | `InteractionRequiredAuthError` | Conditional Access policy on tenant | Use a dedicated test tenant (see Prerequisites) |
 | `az` commands return 404 | Wrong cloud active | Run `az cloud show` to confirm `Topaz` is selected |
 | Subscription not found | No subscription created | Add `--default-subscription` to `topaz-host` |
-

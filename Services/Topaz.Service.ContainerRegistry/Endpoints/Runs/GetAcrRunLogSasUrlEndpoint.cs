@@ -43,7 +43,8 @@ internal sealed class GetAcrRunLogSasUrlEndpoint(Pipeline eventPipeline, ITopazL
             return;
         }
 
-        var logLink = $"https://{registryName}.cr.topaz.local.dev:{GlobalSettings.ContainerRegistryPort}/v2/runs/{runId}/log?token={runId}";
+        var loginServer = GlobalSettings.GetContainerRegistryLoginServer(registryName);
+        var logLink = $"https://{loginServer}/v2/runs/{runId}/log?token={runId}";
         var result = new GetAcrRunLogSasUrlResponse { LogLink = logLink };
 
         response.StatusCode = HttpStatusCode.OK;
