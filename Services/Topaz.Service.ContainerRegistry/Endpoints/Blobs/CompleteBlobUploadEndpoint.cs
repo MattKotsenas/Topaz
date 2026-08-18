@@ -1,5 +1,7 @@
 using System.Net;
+
 using Microsoft.AspNetCore.Http;
+
 using Topaz.Dns;
 using Topaz.Service.ContainerRegistry.Models;
 using Topaz.Service.Shared;
@@ -30,9 +32,10 @@ internal sealed class CompleteBlobUploadEndpoint(AcrDataPlane dataPlane, ITopazL
 
     public void GetResponse(HttpContext context, HttpResponseMessage response, GlobalOptions options)
     {
+        RegistryBlobRequestBodySizeLimit.Apply(context);
         var repository = context.Request.Path.Value.ExtractValueFromPath(2) ?? string.Empty;
-        var uuid       = context.Request.Path.Value.ExtractValueFromPath(5) ?? string.Empty;
-        var digest     = context.Request.Query["digest"].ToString();
+        var uuid = context.Request.Path.Value.ExtractValueFromPath(5) ?? string.Empty;
+        var digest = context.Request.Query["digest"].ToString();
 
         logger.LogDebug(nameof(CompleteBlobUploadEndpoint), nameof(GetResponse),
             "Executing {0}: repository={1} uuid={2} digest={3}", nameof(GetResponse), repository, uuid, digest);

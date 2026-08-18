@@ -49,7 +49,7 @@ public sealed class ContainerRegistryService(Pipeline eventPipeline, ITopazLogge
         new DeleteContainerRegistryEndpoint(eventPipeline, logger),
         new UpdateContainerRegistryEndpoint(eventPipeline, logger),
         new CheckContainerRegistryNameAvailabilityEndpoint(eventPipeline, logger),
-        new AcrV2ChallengeEndpoint(ContainerRegistryControlPlane.New(eventPipeline, logger), logger),
+        new AcrV2ChallengeEndpoint(AcrAuthenticator()),
         new AcrOAuth2ExchangeEndpoint(logger),
         new AcrOAuth2GetTokenEndpoint(ContainerRegistryControlPlane.New(eventPipeline, logger), logger),
         new AcrOAuth2PostTokenEndpoint(ContainerRegistryControlPlane.New(eventPipeline, logger), logger),
@@ -59,21 +59,21 @@ public sealed class ContainerRegistryService(Pipeline eventPipeline, ITopazLogge
         new ListContainerRegistryUsagesEndpoint(eventPipeline, logger),
         new ListReplicationsEndpoint(),
         // Data plane — blob uploads (OCI Distribution Spec)
-        new InitiateBlobUploadEndpoint(AcrDataPlane(), logger),
-        new PatchBlobUploadEndpoint(AcrDataPlane(), logger),
-        new CompleteBlobUploadEndpoint(AcrDataPlane(), logger),
-        new HeadBlobEndpoint(AcrDataPlane(), logger),
-        new GetBlobEndpoint(AcrDataPlane(), logger),
-        new DeleteBlobEndpoint(AcrDataPlane(), logger),
-        new PutManifestEndpoint(AcrDataPlane(), logger),
-        new GetManifestEndpoint(AcrDataPlane(), logger),
-        new HeadManifestEndpoint(AcrDataPlane(), logger),
-        new DeleteManifestEndpoint(AcrDataPlane(), logger),
-        new ListRepositoriesEndpoint(AcrDataPlane(), logger),
-        new ListTagsEndpoint(AcrDataPlane(), logger),
-        new GetTagEndpoint(AcrDataPlane(), logger),
-        new DeleteTagEndpoint(AcrDataPlane(), logger),
-        new DeleteRepositoryEndpoint(AcrDataPlane(), logger),
+        Authenticated(new InitiateBlobUploadEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new PatchBlobUploadEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new CompleteBlobUploadEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new HeadBlobEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new GetBlobEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new DeleteBlobEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new PutManifestEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new GetManifestEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new HeadManifestEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new DeleteManifestEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new ListRepositoriesEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new ListTagsEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new GetTagEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new DeleteTagEndpoint(AcrDataPlane(), logger)),
+        Authenticated(new DeleteRepositoryEndpoint(AcrDataPlane(), logger)),
     ];
 
     internal static void InitializeAuthority()
@@ -83,7 +83,15 @@ public sealed class ContainerRegistryService(Pipeline eventPipeline, ITopazLogge
     }
 
     private AcrDataPlane AcrDataPlane() =>
-        new(new ContainerRegistryResourceProvider(logger), logger);
+        new(
+            new ContainerRegistryResourceProvider(logger),
+            logger);
+
+    private AcrDataPlaneAuthenticator AcrAuthenticator() =>
+        new(ContainerRegistryControlPlane.New(eventPipeline, logger), logger);
+
+    private IEndpointDefinition Authenticated(IEndpointDefinition endpoint) =>
+        new AuthenticatedAcrDataPlaneEndpoint(endpoint, AcrAuthenticator());
 
     internal static void ApplyPersistedLoginServerAuthority(
         string emulatorDirectory,

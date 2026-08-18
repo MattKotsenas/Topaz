@@ -45,9 +45,9 @@ internal sealed class HeadBlobEndpoint(AcrDataPlane dataPlane, ITopazLogger logg
         }
 
         var (sub, rg, registryName) = identifiers.Value;
-        var blob = dataPlane.GetBlob(sub, rg, registryName, digest);
+        var blobLength = dataPlane.GetBlobLength(sub, rg, registryName, digest);
 
-        if (blob == null)
+        if (blobLength == null)
         {
             response.CreateJsonContentResponse(
                 "{\"errors\":[{\"code\":\"BLOB_UNKNOWN\",\"message\":\"blob not found\"}]}",
@@ -57,7 +57,7 @@ internal sealed class HeadBlobEndpoint(AcrDataPlane dataPlane, ITopazLogger logg
 
         response.Headers.Add("Docker-Content-Digest", digest);
         response.Content = new ByteArrayContent([]);
-        response.Content.Headers.ContentLength = 0;
+        response.Content.Headers.ContentLength = blobLength;
         response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         response.StatusCode = HttpStatusCode.OK;
     }

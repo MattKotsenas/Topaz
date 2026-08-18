@@ -1,4 +1,8 @@
-using Topaz.CLI;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
 using Azure;
 using Azure.Containers.ContainerRegistry;
 using Azure.Core;
@@ -7,10 +11,10 @@ using Azure.ResourceManager.ContainerRegistry;
 using Azure.ResourceManager.ContainerRegistry.Models;
 using Azure.ResourceManager.ManagedServiceIdentities;
 using Azure.ResourceManager.Models;
+
 using Microsoft.Graph;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
+
+using Topaz.CLI;
 using Topaz.Identity;
 using Topaz.ResourceManager;
 using Topaz.Shared;
@@ -589,6 +593,32 @@ public class ContainerRegistryTests
     }
 
     [Test]
+    public async Task ContainerRegistry_DataPlane_RejectsMissingAndInvalidCredentials()
+    {
+        var credential = new AzureLocalCredential(Globals.GlobalAdminId);
+        var armClient = new ArmClient(credential, SubscriptionId.ToString(), ArmClientOptions);
+        var subscription = await armClient.GetDefaultSubscriptionAsync();
+        var resourceGroup = await subscription.GetResourceGroupAsync(ResourceGroupName);
+        var registries = resourceGroup.Value.GetContainerRegistries();
+        var registryData = new ContainerRegistryData(
+            new AzureLocation("westeurope"),
+            new ContainerRegistrySku(ContainerRegistrySkuName.Basic));
+        await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
+
+        var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
+        var catalogUri = $"https://{host}/v2/_catalog";
+        using var anonymousClient = new HttpClient();
+        using var anonymous = await anonymousClient.GetAsync(catalogUri);
+        Assert.That((int)anonymous.StatusCode, Is.EqualTo(401));
+
+        using var invalidClient = new HttpClient();
+        invalidClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "not-a-jwt");
+        using var invalid = await invalidClient.GetAsync(catalogUri);
+        Assert.That((int)invalid.StatusCode, Is.EqualTo(401));
+    }
+
+    [Test]
     public async Task ContainerRegistry_ListRepositories_ShouldReflectPushedRepository()
     {
         // Arrange — create registry via ARM
@@ -605,7 +635,7 @@ public class ContainerRegistryTests
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
 
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         var catalogUri = $"https://{host}/v2/_catalog";
 
@@ -665,7 +695,7 @@ public class ContainerRegistryTests
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
 
         // Push a minimal manifest via HttpClient to seed a repository.
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "sdk-app";
         const string minimalManifest =
@@ -717,7 +747,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "tag-test-app";
         const string minimalManifest =
@@ -774,7 +804,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "pagination-app";
         const string minimalManifest =
@@ -826,7 +856,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "delete-manifest-app";
         const string minimalManifest =
@@ -870,7 +900,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "delete-by-digest-app";
         const string manifestV1 =
@@ -943,7 +973,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         // Act — delete a manifest that was never pushed
         var deleteResp = await http.SendAsync(
@@ -967,7 +997,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "head-manifest-app";
         const string minimalManifest =
@@ -1019,7 +1049,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "head-manifest-digest-app";
         const string minimalManifest =
@@ -1063,7 +1093,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         // Act — HEAD a manifest that was never pushed
         var headResp = await http.SendAsync(
@@ -1088,7 +1118,7 @@ public class ContainerRegistryTests
         await registries.CreateOrUpdateAsync(WaitUntil.Completed, RegistryName, registryData);
 
         var host = TopazResourceHelpers.GetDefaultContainerRegistryLoginServer(RegistryName);
-        using var http = new HttpClient();
+        using var http = CreateAuthenticatedRegistryDataPlaneClient();
 
         const string repoName = "delete-blob-app";
         var payload = Encoding.UTF8.GetBytes("delete-blob-payload");
@@ -1240,5 +1270,15 @@ public class ContainerRegistryTests
             allTasks.Add(t);
 
         Assert.That(allTasks, Has.None.Matches<ContainerRegistryTaskResource>(t => t.Data.Name == "deletetask"));
+    }
+
+    private static HttpClient CreateAuthenticatedRegistryDataPlaneClient()
+    {
+        var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue(
+                "Bearer",
+                JwtHelper.GenerateCliToken());
+        return client;
     }
 }

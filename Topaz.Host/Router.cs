@@ -19,7 +19,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
     private readonly AzureAuthorizationAdapter _authorizationAdapter = new(eventPipeline, logger);
     private readonly ResourceManagerResourceProvider _resourceManagerResourceProvider = new(logger);
     private readonly ChaosProvider _chaosProvider = new(logger);
-    
+
     internal async Task MatchAndExecuteEndpoint(IEndpointDefinition[] httpEndpoints, HttpContext context)
     {
         var path = context.Request.Path.ToString();
@@ -56,7 +56,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
 
         IEndpointDefinition? endpoint = null;
         var pathParts = path.Split('/');
-        
+
         foreach (var httpEndpoint in httpEndpoints.Where(e =>
                      e.PortsAndProtocol.Ports.Any(p => p == port) &&
                      (e.RequiredHostServiceLabel == null ||
@@ -84,7 +84,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
                 }
 
                 if(method != endpointMethod) continue;
-                                
+
                 var endpointParts = endpointPath.Split('/');
                 if (endpointParts.Length != pathParts.Length && IsEndpointWithDynamicRouting(endpointParts) == false) continue;
 
@@ -148,22 +148,21 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             await CreateNotFoundResponse(context, method, path);
             return;
         }
-        
+
         logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint), "The selected handler for an endpoint will be {0}", endpoint.GetType().Name);
         logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint), "[{0}] {1}{2}", method, path, query);
 
         var (response, requestError) = await CallEndpoint(endpoint, context);
+        using var responseToDispose = response;
         // Ensure Content is never null - a missing body returns empty string so downstream
-        // code can always call ReadAsByteArrayAsync() without a NullReferenceException.
+        // code can always forward it without a NullReferenceException.
         response.Content ??= new StringContent(string.Empty);
 
         TopazDiagnostics.TryRecordRequest(traceStartUtc, Stopwatch.GetElapsedTime(traceStart).TotalMilliseconds,
             method, path, query.Value, port, endpoint.GetType().Name, endpoint.ProviderNamespace,
             (int)response.StatusCode, requestError, traceParent);
-        var responseBytes = await response.Content.ReadAsByteArrayAsync();
-        
         context.Response.StatusCode = (int)response.StatusCode;
-        
+
         foreach (var header in response.Headers)
         {
             context.Response.Headers.Add(header.Key, new StringValues(header.Value.ToArray()));
@@ -177,7 +176,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             if (string.Equals(header.Key, "Content-Type", StringComparison.OrdinalIgnoreCase)) continue;
             context.Response.Headers[header.Key] = new StringValues(header.Value.ToArray());
         }
-        
+
         switch (response.StatusCode)
         {
             case HttpStatusCode.NotFound:
@@ -191,7 +190,9 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
                 SetResponseContentType(context, response);
                 if (!HttpMethods.IsHead(context.Request.Method))
                 {
-                    await context.Response.Body.WriteAsync(responseBytes);
+                    await response.Content.CopyToAsync(
+                        context.Response.Body,
+                        context.RequestAborted);
                 }
                 return;
             case HttpStatusCode.InternalServerError:
@@ -209,7 +210,9 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
             // HEAD responses must not include a body; only status and headers are returned.
             if (!HttpMethods.IsHead(context.Request.Method))
             {
-                await context.Response.Body.WriteAsync(responseBytes);
+                await response.Content.CopyToAsync(
+                    context.Response.Body,
+                    context.RequestAborted);
             }
         }
     }
@@ -271,12 +274,12 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         catch(Exception ex)
         {
             logger.LogError(ex);
-            
+
             response!.Content = new StringContent(ex.Message);
             response.StatusCode = HttpStatusCode.InternalServerError;
             return (response, ex);
         }
-        
+
         return (response, null);
     }
 
@@ -292,14 +295,14 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         {
             logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint),
                 "Setting content type for response as `{0}`.", response.Content.Headers.ContentType.MediaType);
-                
+
             context.Response.ContentType = response.Content.Headers.ContentType.ToString();
         }
         else
         {
             logger.LogDebug(nameof(Router), nameof(MatchAndExecuteEndpoint),
                 "No content type set for response, defaulting to `application/json`.");
-                
+
             context.Response.ContentType = "application/json";
         }
     }
@@ -313,7 +316,7 @@ internal sealed class Router(Pipeline eventPipeline, GlobalOptions options, ITop
         var failedResponse = new HttpResponseMessage();
         failedResponse.CreateErrorResponse(
             HttpResponseMessageExtensions.EndpointNotFoundCode, method, path);
-                            
+
         context.Response.StatusCode = (int)HttpStatusCode.NotFound;
         await context.Response.WriteAsync(await failedResponse.Content.ReadAsStringAsync());
     }

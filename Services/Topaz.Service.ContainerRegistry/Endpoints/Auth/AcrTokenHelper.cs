@@ -11,8 +11,9 @@ using Topaz.Shared;
 namespace Topaz.Service.ContainerRegistry.Endpoints.Auth;
 
 /// <summary>
-/// Shared authentication helper for the /oauth2/token GET and POST endpoints.
-/// Resolves a caller's object ID from a refresh token or Basic Authorization header.
+/// Shared authentication helper for registry control and data-plane requests.
+/// Resolves a caller's object ID from a refresh token, Bearer token, admin Basic credential,
+/// or sentinel Basic credential carrying a refresh token.
 /// Returns <c>null</c> when the caller cannot be authenticated.
 /// </summary>
 internal static class AcrTokenHelper
@@ -27,7 +28,8 @@ internal static class AcrTokenHelper
     /// Resolves the caller's object ID.
     /// <list type="bullet">
     ///   <item><term>refresh_token present</term><description>Validated as a Topaz JWT; subject returned on success, <c>null</c> on failure.</description></item>
-    ///   <item><term>Basic Authorization header present</term><description>Credentials checked against the registry's admin account; <c>null</c> if the registry is not found, admin is disabled, or credentials are wrong.</description></item>
+    ///   <item><term>Bearer Authorization header present</term><description>JWT subject returned on success; <c>null</c> on failure.</description></item>
+    ///   <item><term>Basic Authorization header present</term><description>Admin credentials are checked against the registry. The sentinel username validates its password as a refresh token.</description></item>
     ///   <item><term>No credentials</term><description>Returns <c>null</c> — anonymous requests are rejected.</description></item>
     /// </list>
     /// </summary>
@@ -42,7 +44,7 @@ internal static class AcrTokenHelper
             try
             {
                 var validated = JwtHelper.ValidateJwt(refreshToken);
-                return validated?.Subject ?? Globals.GlobalAdminId;
+                return validated?.Subject;
             }
             catch
             {
@@ -69,11 +71,32 @@ internal static class AcrTokenHelper
         }
 
         if (!AuthenticationHeaderValue.TryParse(authorization, out var parsedAuthorization) ||
-            !string.Equals(parsedAuthorization.Scheme, "Basic", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(parsedAuthorization.Parameter))
         {
             logger.LogDebug(nameof(AcrTokenHelper), nameof(ResolveObjectId),
                 "Unsupported or malformed Authorization header — issuing 401.");
+            return null;
+        }
+
+        if (string.Equals(parsedAuthorization.Scheme, "Bearer", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var validated = JwtHelper.ValidateJwt(parsedAuthorization.Parameter);
+                return validated?.Subject;
+            }
+            catch
+            {
+                logger.LogDebug(nameof(AcrTokenHelper), nameof(ResolveObjectId),
+                    "Bearer token validation failed, issuing 401.");
+                return null;
+            }
+        }
+
+        if (!string.Equals(parsedAuthorization.Scheme, "Basic", StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogDebug(nameof(AcrTokenHelper), nameof(ResolveObjectId),
+                "Unsupported Authorization scheme, issuing 401.");
             return null;
         }
 
@@ -110,7 +133,7 @@ internal static class AcrTokenHelper
             try
             {
                 var validated = JwtHelper.ValidateJwt(password);
-                return validated?.Subject ?? Globals.GlobalAdminId;
+                return validated?.Subject;
             }
             catch
             {
@@ -129,7 +152,8 @@ internal static class AcrTokenHelper
         }
 
         if (!string.Equals(registry.Properties.AdminUsername, username, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(registry.Properties.AdminPassword, password, StringComparison.Ordinal))
+            (!string.Equals(registry.Properties.AdminPassword, password, StringComparison.Ordinal) &&
+             !string.Equals(registry.Properties.AdminPassword2, password, StringComparison.Ordinal)))
         {
             logger.LogDebug(nameof(AcrTokenHelper), nameof(ValidateBasicAuth),
                 "Basic auth — invalid credentials for user '{0}'.", username);

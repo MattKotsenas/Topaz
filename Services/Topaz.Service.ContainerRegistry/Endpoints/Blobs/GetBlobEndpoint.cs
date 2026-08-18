@@ -45,7 +45,7 @@ internal sealed class GetBlobEndpoint(AcrDataPlane dataPlane, ITopazLogger logge
         }
 
         var (sub, rg, registryName) = identifiers.Value;
-        var blob = dataPlane.GetBlob(sub, rg, registryName, digest);
+        var blob = dataPlane.OpenBlob(sub, rg, registryName, digest);
 
         if (blob == null)
         {
@@ -56,7 +56,7 @@ internal sealed class GetBlobEndpoint(AcrDataPlane dataPlane, ITopazLogger logge
         }
 
         response.Headers.Add("Docker-Content-Digest", digest);
-        response.Content = new ByteArrayContent(blob);
+        response.Content = new StreamContent(blob);
         response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         response.Content.Headers.ContentLength = blob.Length;
         response.StatusCode = HttpStatusCode.OK;

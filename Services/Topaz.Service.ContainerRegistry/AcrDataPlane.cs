@@ -18,8 +18,12 @@ namespace Topaz.Service.ContainerRegistry;
 ///   manifests/{repository}/{ref} — manifest JSON files (ref = tag or digest hex)
 /// </code>
 /// </summary>
-internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, ITopazLogger logger)
+internal sealed class AcrDataPlane(
+    ContainerRegistryResourceProvider provider,
+    ITopazLogger logger)
 {
+    private readonly object blobMutationLock = new();
+
     // ── Path helpers ──────────────────────────────────────────────────────────
 
     /// <summary>Returns the root data path for <paramref name="registryName"/> in the given subscription/rg.</summary>
@@ -140,8 +144,9 @@ internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, I
             finalChunk.CopyTo(fs);
         }
 
-        var content = File.ReadAllBytes(uploadPath);
-        var actualDigest = ComputeDigest(content);
+        string actualDigest;
+        using (var content = File.OpenRead(uploadPath))
+            actualDigest = ComputeDigest(content);
 
         if (!string.Equals(actualDigest, digest, StringComparison.OrdinalIgnoreCase))
         {
@@ -156,22 +161,28 @@ internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, I
         var blobPath   = Path.Combine(blobsDir, digestHex);
         PathGuard.EnsureWithinDirectory(blobPath, blobsDir);
 
-        File.Move(uploadPath, blobPath, overwrite: true);
+        lock (blobMutationLock)
+        {
+            if (File.Exists(blobPath))
+                File.Delete(uploadPath);
+            else
+                File.Move(uploadPath, blobPath);
+        }
         return actualDigest;
     }
 
     // ── Blob retrieval ────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns the blob content for the given <paramref name="digest"/>, or <c>null</c> if not found.
+    /// Opens the blob content for the given <paramref name="digest"/>, or <c>null</c> if not found.
     /// Corresponds to <c>GET /v2/{name}/blobs/{digest}</c>.
     /// </summary>
-    public byte[]? GetBlob(
+    public Stream? OpenBlob(
         SubscriptionIdentifier sub, ResourceGroupIdentifier rg,
         string registryName, string digest)
     {
-        logger.LogDebug(nameof(AcrDataPlane), nameof(GetBlob),
-            "Executing {0}: registry={1} digest={2}", nameof(GetBlob), registryName, digest);
+        logger.LogDebug(nameof(AcrDataPlane), nameof(OpenBlob),
+            "Executing {0}: registry={1} digest={2}", nameof(OpenBlob), registryName, digest);
 
         PathGuard.ValidateName(registryName);
 
@@ -182,7 +193,27 @@ internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, I
         var blobPath = Path.Combine(blobsDir, digestHex);
         PathGuard.EnsureWithinDirectory(blobPath, blobsDir);
 
-        return File.Exists(blobPath) ? File.ReadAllBytes(blobPath) : null;
+        return OpenBlobFile(blobPath);
+    }
+
+    private static FileStream? OpenBlobFile(string blobPath)
+    {
+        try
+        {
+            return new FileStream(
+                blobPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -205,8 +236,8 @@ internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, I
         var blobPath = Path.Combine(blobsDir, digestHex);
         PathGuard.EnsureWithinDirectory(blobPath, blobsDir);
 
-        if (!File.Exists(blobPath)) return null;
-        return new FileInfo(blobPath).Length;
+        using var blob = OpenBlobFile(blobPath);
+        return blob?.Length;
     }
 
     /// <summary>
@@ -230,10 +261,15 @@ internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, I
         var blobPath = Path.Combine(blobsDir, digestHex);
         PathGuard.EnsureWithinDirectory(blobPath, blobsDir);
 
-        if (!File.Exists(blobPath)) return false;
+        lock (blobMutationLock)
+        {
+            if (!File.Exists(blobPath)) return false;
 
-        File.Delete(blobPath);
-        return true;
+            var deletePath = blobPath + ".deleting-" + Guid.NewGuid().ToString("N");
+            File.Move(blobPath, deletePath);
+            File.Delete(deletePath);
+            return true;
+        }
     }
 
     /// <summary>
@@ -510,6 +546,12 @@ internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, I
         return "sha256:" + Convert.ToHexString(hash).ToLowerInvariant();
     }
 
+    private static string ComputeDigest(Stream data)
+    {
+        var hash = SHA256.HashData(data);
+        return "sha256:" + Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
     private static IEnumerable<string> GetTagManifestPaths(string manifestsDir)
         => Directory.GetFiles(manifestsDir, "*.json")
                     .Where(path =>
@@ -530,9 +572,14 @@ internal sealed class AcrDataPlane(ContainerRegistryResourceProvider provider, I
                 if (string.Equals(envelope?.Digest, digest, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
-            catch
+            catch (Exception ex)
             {
-                // Skip malformed files; they should not block normal delete behaviour.
+                logger.LogDebug(
+                    nameof(AcrDataPlane),
+                    nameof(HasTagReferenceForDigest),
+                    "Skipping malformed manifest reference '{0}': {1}",
+                    tagPath,
+                    ex.Message);
             }
         }
 
