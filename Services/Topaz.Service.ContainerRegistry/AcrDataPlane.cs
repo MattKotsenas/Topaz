@@ -320,8 +320,12 @@ internal sealed class AcrDataPlane(
 
         var manifestsDir = ManifestsPath(sub, rg, registryName, repository);
 
-        // Store by tag or digest reference.
-        var refPath = Path.Combine(manifestsDir, reference);
+        var digestReference =
+            reference.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase);
+        var storageReference = digestReference ? digestHex : reference;
+
+        // Store by tag or normalized digest reference.
+        var refPath = Path.Combine(manifestsDir, storageReference);
         PathGuard.EnsureWithinDirectory(refPath, manifestsDir);
 
         var envelope = new ManifestEnvelope { ContentType = contentType, Content = manifestBytes, Digest = digest };
@@ -329,7 +333,7 @@ internal sealed class AcrDataPlane(
         File.WriteAllText(refPath + ".json", json);
 
         // Also index by digest so pulls by digest work.
-        if (!reference.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+        if (!digestReference)
         {
             var digestPath = Path.Combine(manifestsDir, digestHex + ".json");
             PathGuard.EnsureWithinDirectory(digestPath, manifestsDir);
